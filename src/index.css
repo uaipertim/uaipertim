@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #F7F4EF;
+}
+
+/* Custom scrollbars to match our warm creme theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F7F4EF;
+}
+::-webkit-scrollbar-thumb {
+  background: #EADFD8;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #756B66;
+}
+
+/* Custom Merchant Chat Button Styles */
+.merchant-chat-button {
+  padding: 0.625rem 1.25rem;
+  color: #ea580c; /* text-orange-600 */
+  border: 1px solid #fed7aa; /* border-orange-200 */
+  border-radius: 0.75rem; /* rounded-xl */
+  font-weight: 700; /* font-bold */
+  font-size: 0.75rem; /* text-xs */
+  transition: all 0.3s;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+.merchant-chat-button:hover {
+  color: white;
+  background-color: #ea580c; /* hover:bg-orange-600 */
+}
+
+.merchant-chat-button--unread {
+  background-color: #E94F2F; /* UaiPertim brand orange */
+  color: white !important;
+  border-color: transparent !important;
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  box-shadow: 0 10px 15px -3px rgba(233, 79, 47, 0.3), 0 4px 6px -4px rgba(233, 79, 47, 0.3);
+}
+
+.merchant-chat-button--unread:hover {
+  background-color: #BD351C; /* hover:bg-[#BD351C] */
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: .7;
+  }
+}
+

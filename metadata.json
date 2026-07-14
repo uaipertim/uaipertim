@@ -1,0 +1,6 @@
+{
+  "name": "UaiPertim",
+  "description": "Plataforma de delivery para cidades pequenas, conectando clientes, estabelecimentos e administradores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
