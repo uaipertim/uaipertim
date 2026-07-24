@@ -18,7 +18,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ children, allowe
     if (loading) return;
 
     if (!isAuthenticated) {
-      if (path === '/meus-pedidos' || path === '/minha-conta') {
+      if (path === '/meus-pedidos' || path === '/minha-conta' || path.startsWith('/acompanhar-pedido/')) {
         sessionStorage.setItem('redirect_after_login', path);
       }
       showToast('Por favor, efetue o login para acessar esta página.', 'info');

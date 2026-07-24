@@ -93,7 +93,7 @@ export const MyAccount: React.FC = () => {
   }
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6 w-full">
       {/* Header breadcrumb bar */}
       <div className="flex items-center justify-between">
         <button
@@ -123,7 +123,7 @@ export const MyAccount: React.FC = () => {
         />
 
         {/* Content panel */}
-        <div className="flex-1 bg-white md:bg-transparent rounded-3xl p-1 md:p-0 w-full min-h-[50vh]">
+        <div className="flex-1 bg-white md:bg-transparent rounded-3xl p-4 md:p-0 w-full min-h-[50vh]">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}

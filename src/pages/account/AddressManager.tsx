@@ -127,10 +127,15 @@ export const AddressManager: React.FC = () => {
   return (
     <div className="space-y-6">
       {/* Header and Add button */}
-      <div className="flex items-center justify-between pb-2 border-b border-[#EADFD8]">
-        <div className="flex items-center gap-2">
-          <MapPin className="w-5 h-5 text-[#E94F2F]" />
-          <h3 className="font-extrabold text-base text-[#201A17]">Meus Endereços de Entrega</h3>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-[#EADFD8]">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-[#E94F2F]/10 rounded-xl text-[#E94F2F]">
+            <MapPin className="w-5 h-5" />
+          </div>
+          <div>
+            <span className="text-[10px] font-black uppercase tracking-wider text-[#756B66] block">Endereços</span>
+            <h2 className="font-black text-lg text-[#201A17]">Meus Endereços de Entrega</h2>
+          </div>
         </div>
         {!showForm && (
           <button
@@ -138,10 +143,11 @@ export const AddressManager: React.FC = () => {
               setEditingAddress(null);
               setShowForm(true);
             }}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black text-white bg-[#E94F2F] hover:bg-[#BD351C] transition-all cursor-pointer shadow-xs"
+            type="button"
+            className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-3 rounded-xl text-xs font-black text-white bg-[#E94F2F] hover:bg-[#BD351C] transition-all cursor-pointer shadow-sm active:scale-[0.98]"
           >
             <Plus className="w-4 h-4" />
-            <span>Adicionar Endereço</span>
+            <span>Adicionar endereço</span>
           </button>
         )}
       </div>

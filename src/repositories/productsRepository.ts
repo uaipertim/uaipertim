@@ -75,38 +75,50 @@ export const productsRepository = {
     try {
       const docRef = doc(db, COLLECTION_NAME, prod.id);
       
-      const mappedSizes = (prod as any).sizesList || prod.sizes?.map((sz, sIdx) => ({
-        id: sz.toLowerCase().replace(/\s+/g, '-'),
-        name: sz,
-        priceDelta: 0,
-        active: true,
-        sortOrder: sIdx + 1,
-      })) || [];
+      const sizeGroup = prod.optionGroups?.find(g => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho');
+      const mappedSizes = prod.sizes?.map((sz, sIdx) => {
+        const optionItem = sizeGroup?.options?.find(o => o.name.toLowerCase() === sz.toLowerCase());
+        return {
+          id: sz.toLowerCase().replace(/\s+/g, '-'),
+          name: sz,
+          priceDelta: optionItem ? optionItem.additionalPrice : 0,
+          active: optionItem ? optionItem.active : true,
+          sortOrder: sIdx + 1,
+        };
+      }) || (prod as any).sizesList || [];
 
-      const mappedCrusts = (prod as any).crusts || prod.borders?.map((br, bIdx) => ({
-        id: br.toLowerCase().replace(/\s+/g, '-'),
-        name: br,
-        priceDelta: br.includes('Catupiry') || br.includes('Cheddar') ? 5.0 : 0.0,
-        active: true,
-        sortOrder: bIdx + 1,
-      })) || [];
+      const borderGroup = prod.optionGroups?.find(g => g.name.toLowerCase().includes('borda') || g.id === 'borda' || g.id === 'escolha-a-borda');
+      const mappedCrusts = prod.borders?.map((br, bIdx) => {
+        const optionItem = borderGroup?.options?.find(o => o.name.toLowerCase() === br.toLowerCase());
+        return {
+          id: br.toLowerCase().replace(/\s+/g, '-'),
+          name: br,
+          priceDelta: optionItem ? optionItem.additionalPrice : (br.includes('Catupiry') || br.includes('Cheddar') ? 5.0 : 0.0),
+          active: optionItem ? optionItem.active : true,
+          sortOrder: bIdx + 1,
+        };
+      }) || (prod as any).crusts || [];
 
-      const mappedExtras = (prod as any).extrasList || prod.extras?.map((ex: any, eIdx) => ({
-        id: ex.id || ex.name.toLowerCase().replace(/\s+/g, '-'),
-        name: ex.name,
-        price: typeof ex.price === 'number' ? ex.price : 0,
-        active: ex.active !== undefined ? ex.active : true,
-        maxQuantity: typeof ex.maxQuantity === 'number' ? ex.maxQuantity : 5,
-        sortOrder: typeof ex.sortOrder === 'number' ? ex.sortOrder : eIdx + 1,
-      })) || [];
+      const extrasGroup = prod.optionGroups?.find(g => g.name.toLowerCase().includes('adicionais premium') || g.id === 'adicionais-premium' || g.name.toLowerCase() === 'adicionais');
+      const mappedExtras = prod.extras?.map((ex: any, eIdx) => {
+        const optionItem = extrasGroup?.options?.find(o => o.name.toLowerCase() === ex.name.toLowerCase());
+        return {
+          id: ex.id || ex.name.toLowerCase().replace(/\s+/g, '-'),
+          name: ex.name,
+          price: optionItem ? optionItem.additionalPrice : (typeof ex.price === 'number' ? ex.price : 0),
+          active: optionItem ? optionItem.active : (ex.active !== undefined ? ex.active : true),
+          maxQuantity: typeof ex.maxQuantity === 'number' ? ex.maxQuantity : 5,
+          sortOrder: typeof ex.sortOrder === 'number' ? ex.sortOrder : eIdx + 1,
+        };
+      }) || (prod as any).extrasList || [];
 
       const firestoreData = {
         id: prod.id,
         establishmentId: establishmentId || (prod as any).establishmentId || '',
         establishmentName: (prod as any).establishmentName || '',
         cityId: (prod as any).cityId || '',
-        categoryId: prod.category?.toLowerCase().replace(/\s+/g, '-') || 'outros',
-        categoryName: prod.category || 'Outros',
+        categoryId: prod.menuCategoryId || prod.category?.toLowerCase().replace(/\s+/g, '-') || 'outros',
+        categoryName: prod.menuCategoryName || prod.category || 'Outros',
         name: prod.name,
         slug: prod.id,
         description: prod.description || null,
@@ -118,8 +130,11 @@ export const productsRepository = {
         sizes: mappedSizes,
         crusts: mappedCrusts,
         extras: mappedExtras,
+        optionGroups: prod.optionGroups || [],
         notesEnabled: (prod as any).notesEnabled !== undefined ? (prod as any).notesEnabled : true,
         sortOrder: (prod as any).sortOrder || 1,
+        menuCategoryId: prod.menuCategoryId || null,
+        menuCategoryName: prod.menuCategoryName || null,
         updatedAt: serverTimestamp()
       };
 

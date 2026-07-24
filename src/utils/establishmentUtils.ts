@@ -35,8 +35,22 @@ export function canEstablishmentReceiveOrders(establishment: any): boolean {
   return active && open && acceptingOrders && !temporarilyPaused && !suspended;
 }
 
+function formatTime(timeStr: string): string {
+  if (!timeStr) return '';
+  const parts = timeStr.split(':');
+  if (parts.length >= 2) {
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10);
+    if (minutes === 0) {
+      return `${hours}h`;
+    }
+    return `${hours}h${minutes.toString().padStart(2, '0')}`;
+  }
+  return timeStr;
+}
+
 /**
- * Calculates the next opening text (e.g. "Abre hoje às 18h00" or "Abre amanhã às 11h00")
+ * Calculates the next opening text (e.g. "Abre hoje às 18h" or "Abre amanhã às 11h")
  * based on the business hours of an establishment relative to America/Sao_Paulo timezone.
  */
 export function getNextOpeningTimeText(businessHours: any[] | undefined): string | null {
@@ -60,7 +74,7 @@ export function getNextOpeningTimeText(businessHours: any[] | undefined): string
     const todayBH = businessHours.find(bh => bh.day.toLowerCase() === capitalizedDay.toLowerCase());
     if (todayBH && todayBH.isOpen) {
       if (timeString < todayBH.openTime) {
-        return `Abre hoje às ${todayBH.openTime}`;
+        return `Abre hoje às ${formatTime(todayBH.openTime)}`;
       }
     }
 
@@ -69,7 +83,7 @@ export function getNextOpeningTimeText(businessHours: any[] | undefined): string
     const tomorrowDay = daysOfWeek[tomorrowIdx];
     const tomorrowBH = businessHours.find(bh => bh.day.toLowerCase() === tomorrowDay.toLowerCase());
     if (tomorrowBH && tomorrowBH.isOpen) {
-      return `Abre amanhã às ${tomorrowBH.openTime}`;
+      return `Abre amanhã às ${formatTime(tomorrowBH.openTime)}`;
     }
 
     // Find any next open day:
@@ -78,7 +92,7 @@ export function getNextOpeningTimeText(businessHours: any[] | undefined): string
       const nextDay = daysOfWeek[nextIdx];
       const nextBH = businessHours.find(bh => bh.day.toLowerCase() === nextDay.toLowerCase());
       if (nextBH && nextBH.isOpen) {
-        return `Abre ${nextBH.day} às ${nextBH.openTime}`;
+        return `Abre ${nextBH.day} às ${formatTime(nextBH.openTime)}`;
       }
     }
   } catch (e) {

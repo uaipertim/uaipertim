@@ -4,6 +4,10 @@ import { useAuth } from '../hooks/useAuth';
 import { useLocation } from '../hooks/useLocation';
 import { RefreshCw, User, Store, ShieldAlert, Wifi, Info, LogIn, MapPin, ShoppingBag, Clipboard, LogOut, Bike, ChevronDown } from 'lucide-react';
 import { APP_ENV, ENABLE_DEMO_ROUTE } from '../config';
+import { NotificationBell } from './notifications/NotificationBell';
+import { NotificationPanel } from './notifications/NotificationPanel';
+import { NotificationSoundControl } from './notifications/NotificationSoundControl';
+import { ProfileDropdown } from './layout/ProfileDropdown';
 
 export const Header: React.FC = () => {
   const { 
@@ -21,6 +25,7 @@ export const Header: React.FC = () => {
   const { isAuthenticated, userProfile, logout, loading, currentUser } = useAuth();
   const [path, navigate] = useLocation();
   const [isMenuOpen, setIsMenuOpen] = React.useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
 
   const activeUserOrders = React.useMemo(() => {
     if (!isAuthenticated || !userProfile || userProfile.role !== 'customer' || !currentUser) return [];
@@ -81,8 +86,14 @@ export const Header: React.FC = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-col md:flex-row gap-4 justify-between items-center">
           {/* Brand Logo */}
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate('/')}>
-            <div className="bg-[#E94F2F] text-white p-2 rounded-xl shadow-md flex items-center justify-center font-black tracking-tight text-lg w-10 h-10">
-              UP
+            <div className="w-11 h-11 shrink-0 overflow-hidden rounded-full shadow-xs flex items-center justify-center">
+              <img
+                src="/brand/uaipertim-logo-oficial-v2.png"
+                alt="UaiPertim"
+                loading="eager"
+                decoding="async"
+                className="w-full h-full object-cover select-none pointer-events-none scale-[1.02]"
+              />
             </div>
             <div>
               <h1 className="text-xl font-extrabold text-[#201A17] tracking-tight flex items-center gap-1.5">
@@ -184,14 +195,21 @@ export const Header: React.FC = () => {
   const isCustomerOrVisitor = !isAuthenticated || userProfile?.role === 'customer';
 
   return (
-    <header className="bg-white border-b border-[#EADFD8] sticky top-0 z-50 shadow-xs" id="uaipertim-main-header">
+    <header className="bg-white border-b border-[#EADFD8] sticky top-0 z-50 shadow-xs w-full box-border overflow-x-clip" id="uaipertim-main-header">
+      <NotificationPanel />
       {/* Line 1: Top Line */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex justify-between items-center border-b border-[#EADFD8]/30 relative">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex justify-between items-center border-b border-[#EADFD8]/30 relative w-full box-border">
         {/* Left: Logo & Compact City */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 min-w-0 flex-1">
           <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate('/')}>
-            <div className="bg-[#E94F2F] text-white p-2 rounded-xl shadow-md flex items-center justify-center font-black tracking-tight text-lg w-10 h-10">
-              UP
+            <div className="w-11 h-11 shrink-0 overflow-hidden rounded-full shadow-xs flex items-center justify-center">
+              <img
+                src="/brand/uaipertim-logo-oficial-v2.png"
+                alt="UaiPertim"
+                loading="eager"
+                decoding="async"
+                className="w-full h-full object-cover select-none pointer-events-none scale-[1.02]"
+              />
             </div>
             <div>
               <h1 className="text-lg font-extrabold text-[#201A17] tracking-tight flex items-center gap-1.5">
@@ -211,7 +229,13 @@ export const Header: React.FC = () => {
         </div>
 
         {/* Right: Authentication Area */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 shrink-0">
+          {isAuthenticated && userProfile?.role === 'merchant' && (
+            <div className="hidden md:flex">
+              <NotificationSoundControl />
+            </div>
+          )}
+          {isAuthenticated && <NotificationBell />}
           {loading ? (
             <div className="w-16 h-8 bg-neutral-200/60 animate-pulse rounded-lg" />
           ) : (
@@ -359,134 +383,29 @@ export const Header: React.FC = () => {
               {isAuthenticated && (
                 <div className="md:hidden relative">
                   <button
+                    ref={triggerRef}
                     onClick={() => setIsMenuOpen(!isMenuOpen)}
                     className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#EADFD8] bg-[#F7F4EF] hover:bg-white text-xs font-black text-[#201A17] cursor-pointer transition-all active:scale-95 shadow-xs"
                     aria-label="Abrir menu de usuário"
                   >
                     <User className="w-4 h-4 text-[#E94F2F]" />
-                    <span className="max-w-[70px] truncate">
+                    <span className="max-w-[105px] truncate text-xs">
                       {userProfile?.name?.split(' ')[0] || 'Menu'}
                     </span>
                     <ChevronDown className={`w-3 h-3 text-[#756B66] transition-transform ${isMenuOpen ? 'rotate-180' : ''}`} />
                   </button>
                   
-                  {isMenuOpen && (
-                    <div className="absolute right-0 top-12 w-60 bg-white rounded-2xl shadow-xl border border-[#EADFD8] p-3.5 z-50 flex flex-col gap-1.5 animate-in fade-in slide-in-from-top-2 duration-150">
-                      {/* User details header */}
-                      <div className="px-2 py-1.5 border-b border-[#F7F4EF] mb-1">
-                        <p className="text-[9px] text-[#756B66] uppercase font-black tracking-wider">Identificação</p>
-                        <p className="text-xs font-black text-[#201A17] truncate">{userProfile?.name}</p>
-                        <p className="text-[10px] text-[#756B66] font-semibold truncate leading-none mt-1">{userProfile?.email}</p>
-                        {userProfile?.role === 'merchant' && (
-                          <p className="text-[10px] text-[#E94F2F] font-bold mt-1.5 truncate">
-                            Loja: {userProfile.establishmentId ? (establishments.find(e => e.id === userProfile.establishmentId)?.name || userProfile.establishmentId) : 'Estabelecimento'}
-                          </p>
-                        )}
-                        {userProfile?.role === 'admin' && (
-                          <p className="text-[10px] text-amber-600 font-bold mt-1.5">
-                            Administrador
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Customer Links */}
-                      {userProfile?.role === 'customer' && (
-                        <>
-                          {activeUserOrders.length > 0 && (
-                            <button
-                              onClick={() => {
-                                setIsMenuOpen(false);
-                                navigate(`/acompanhar-pedido/${activeUserOrders[0].id}`);
-                              }}
-                              className={`flex items-center gap-2 px-3 py-2 text-left text-xs font-black rounded-lg cursor-pointer transition-colors w-full ${
-                                path.startsWith('/acompanhar-pedido/')
-                                  ? 'bg-[#E94F2F] text-white'
-                                  : 'text-[#E94F2F] bg-orange-50 border border-orange-200 hover:bg-orange-100'
-                              }`}
-                            >
-                              <Bike className={`w-4 h-4 shrink-0 ${
-                                path.startsWith('/acompanhar-pedido/') ? 'text-white' : 'text-[#E94F2F]'
-                              }`} />
-                              <span>Acompanhar pedido</span>
-                            </button>
-                          )}
-                          <button
-                            onClick={() => {
-                              setIsMenuOpen(false);
-                              navigate('/meus-pedidos');
-                            }}
-                            className={`flex items-center gap-2 px-3 py-2 text-left text-xs font-bold rounded-lg cursor-pointer transition-colors w-full ${
-                              path === '/meus-pedidos' && !window.location.search.includes('view=timeline') ? 'bg-[#E94F2F] text-white' : 'text-[#756B66] hover:bg-[#F7F4EF] hover:text-[#201A17]'
-                            }`}
-                          >
-                            <Clipboard className="w-4 h-4 shrink-0" />
-                            <span>Meus pedidos</span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setIsMenuOpen(false);
-                              navigate('/minha-conta');
-                            }}
-                            className={`flex items-center gap-2 px-3 py-2 text-left text-xs font-bold rounded-lg cursor-pointer transition-colors w-full ${
-                              path === '/minha-conta' ? 'bg-[#E94F2F] text-white' : 'text-[#756B66] hover:bg-[#F7F4EF] hover:text-[#201A17]'
-                            }`}
-                          >
-                            <User className="w-4 h-4 shrink-0" />
-                            <span>Minha conta</span>
-                          </button>
-                        </>
-                      )}
-
-                      {/* Merchant Links */}
-                      {userProfile?.role === 'merchant' && (
-                        <button
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            navigate('/gestor');
-                          }}
-                          className={`flex items-center gap-2 px-3 py-2 text-left text-xs font-bold rounded-lg cursor-pointer transition-colors w-full ${
-                            path === '/gestor' ? 'bg-[#E94F2F] text-white' : 'text-[#756B66] hover:bg-[#F7F4EF] hover:text-[#201A17]'
-                          }`}
-                        >
-                          <Store className="w-4 h-4 shrink-0" />
-                          <span>Painel da loja</span>
-                        </button>
-                      )}
-
-                      {/* Admin Links */}
-                      {userProfile?.role === 'admin' && (
-                        <button
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            navigate('/admin');
-                          }}
-                          className={`flex items-center gap-2 px-3 py-2 text-left text-xs font-bold rounded-lg cursor-pointer transition-colors w-full ${
-                            path === '/admin' ? 'bg-[#E94F2F] text-white' : 'text-[#756B66] hover:bg-[#F7F4EF] hover:text-[#201A17]'
-                          }`}
-                        >
-                          <ShieldAlert className="w-4 h-4 shrink-0" />
-                          <span>Painel administrativo</span>
-                        </button>
-                      )}
-
-                      {/* Logout Button */}
-                      <button
-                        onClick={async () => {
-                          setIsMenuOpen(false);
-                          try {
-                            await logout();
-                            navigate('/');
-                          } catch (e) {
-                            console.error(e);
-                          }
-                        }}
-                        className="flex items-center gap-2 px-3 py-2 text-left text-xs font-bold text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200/55 rounded-lg cursor-pointer transition-colors w-full mt-1"
-                      >
-                        <LogOut className="w-4 h-4 shrink-0" />
-                        <span>Sair da conta</span>
-                      </button>
-                    </div>
-                  )}
+                  <ProfileDropdown
+                    isOpen={isMenuOpen}
+                    onClose={() => setIsMenuOpen(false)}
+                    triggerRef={triggerRef}
+                    userProfile={userProfile}
+                    activeUserOrders={activeUserOrders}
+                    establishments={establishments}
+                    navigate={navigate}
+                    logout={logout}
+                    path={path}
+                  />
                 </div>
               )}
             </>
@@ -533,7 +452,7 @@ export const Header: React.FC = () => {
                   window.dispatchEvent(new Event('open-cart'));
                 }, 50);
               }}
-              className="flex items-center gap-2 bg-[#E94F2F] hover:bg-[#BD351C] text-white px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer relative shadow-xs shrink-0"
+              className="hidden md:flex items-center gap-2 bg-[#E94F2F] hover:bg-[#BD351C] text-white px-3 sm:px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer relative shadow-xs shrink-0"
             >
               <ShoppingBag className="w-4 h-4 text-white shrink-0" />
               <span className="hidden sm:inline">Carrinho</span>

@@ -13,6 +13,7 @@ import {
 
 import { db, auth } from '../lib/firebase';
 import { OrderChatMessage } from '../types/orderChat';
+import { createMerchantNewMessageNotification, createCustomerNewMessageNotification } from './notificationService';
 
 async function resolveAuthenticatedContext() {
   const firebaseUser = auth.currentUser;
@@ -104,6 +105,12 @@ export async function sendOrderMessage(orderId: string, text: string): Promise<s
       collection(db, "orders", orderId, "messages"),
       messageData
     );
+
+    if (userProfile.role === 'customer') {
+      createMerchantNewMessageNotification(order, messageRef.id, firebaseUser.uid);
+    } else {
+      createCustomerNewMessageNotification(order, messageRef.id, firebaseUser.uid);
+    }
 
     try {
       const updateData: any = {

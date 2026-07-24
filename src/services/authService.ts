@@ -8,6 +8,14 @@ import {
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { auth, db, isFirebaseConnected } from "../lib/firebase";
 import { UserProfile } from "../types/auth";
+import { PUBLIC_APP_URL, FIREBASE_CONFIG } from "../config/environment";
+
+const maskEmailForLogging = (email: string): string => {
+  const [localPart, domain] = email.split('@');
+  if (!localPart || !domain) return email;
+  if (localPart.length <= 2) return `${localPart}***@${domain}`;
+  return `${localPart.slice(0, 2)}***@${domain}`;
+};
 
 export class AuthError extends Error {
   code: string;
@@ -97,29 +105,136 @@ export const authService = {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+    let firebaseUser: FirebaseUser | null = null;
 
     try {
-      const userCredential = await fbSignIn(auth, normalizedEmail, password);
-      const firebaseUser = userCredential.user;
+      // 1. Authenticate with email and password
+      try {
+        const userCredential = await fbSignIn(auth, normalizedEmail, password);
+        firebaseUser = userCredential.user;
+      } catch (authErr: any) {
+        console.error("Firebase Auth sign in failed:", authErr);
+        const code = authErr?.code;
+        if (code === "auth/user-disabled") {
+          throw new AuthError("Esta conta está temporariamente desativada.", "AUTH_USER_DISABLED");
+        }
+        throw new AuthError("E-mail ou senha incorretos.", "AUTH_INVALID_CREDENTIALS");
+      }
 
       if (!firebaseUser) {
-        throw new AuthError("AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED");
+        throw new AuthError("E-mail ou senha incorretos.", "AUTH_INVALID_CREDENTIALS");
       }
 
-      const profile = await this.getUserProfile(firebaseUser.uid);
+      const uid = firebaseUser.uid;
 
+      // 2. Fetch Firestore profile document
+      if (!db || !isFirebaseConnected) {
+        throw new AuthError("Erro de conexão. Banco de dados indisponível.", "firestore/unavailable");
+      }
+
+      const docRef = doc(db, "users", uid);
+      const docSnap = await getDoc(docRef);
+
+      // Check if users/{uid} is missing
+      if (!docSnap.exists()) {
+        await fbSignOut(auth);
+        throw new AuthError("Seu perfil de usuário não foi encontrado.", "USER_PROFILE_NOT_FOUND");
+      }
+
+      const data = docSnap.data();
+      const profile: UserProfile = {
+        name: data.name || "Usuário",
+        email: data.email || "",
+        phone: data.phone || "",
+        role: data.role || "customer",
+        active: data.active !== undefined ? data.active : true,
+        establishmentId: data.establishmentId || null,
+        cityId: data.cityId || null,
+        avatarType: data.avatarType || "initials",
+        avatarKey: data.avatarKey || null,
+        avatarUrl: data.avatarUrl || null,
+        preferences: data.preferences || {
+          orderUpdates: true,
+          marketing: false,
+          preferredFulfillment: null,
+          confirmCartClear: true
+        },
+        createdAt: data.createdAt || null,
+        updatedAt: data.updatedAt || null
+      };
+
+      // Check if disabled/inactive
       if (profile.active !== true) {
         await fbSignOut(auth);
-        throw new AuthError("Este acesso está temporariamente desativado.", "ACCOUNT_DISABLED");
+        throw new AuthError("Esta conta está temporariamente desativada.", "AUTH_USER_DISABLED");
       }
 
+      // Check if role is valid (must be customer, merchant, or admin)
       if (
         profile.role !== "customer" &&
         profile.role !== "merchant" &&
         profile.role !== "admin"
       ) {
         await fbSignOut(auth);
-        throw new AuthError("Nível de acesso inválido.", "INVALID_ROLE");
+        throw new AuthError("Nível de acesso não permitido.", "USER_ROLE_NOT_ALLOWED");
+      }
+
+      // Check merchant-specific constraints
+      if (profile.role === "merchant") {
+        if (!profile.establishmentId) {
+          await fbSignOut(auth);
+          throw new AuthError(
+            "Sua conta de parceiro ainda não possui um estabelecimento vinculado.",
+            "MERCHANT_ESTABLISHMENT_NOT_LINKED"
+          );
+        }
+
+        // Check if linked establishment document actually exists
+        const estRef = doc(db, "establishments", profile.establishmentId);
+        const estSnap = await getDoc(estRef);
+        if (!estSnap.exists()) {
+          await fbSignOut(auth);
+          throw new AuthError(
+            "Sua conta de parceiro ainda não possui um estabelecimento vinculado.",
+            "MERCHANT_ESTABLISHMENT_NOT_LINKED"
+          );
+        }
+
+        // Verify if ownerUid correspondente match
+        const estData = estSnap.data();
+        const matchesOwner = 
+          estData?.ownerUid === uid || 
+          estData?.merchantUid === uid || 
+          estData?.merchantOwnerUid === uid ||
+          estData?.ownerEmail?.toLowerCase() === profile.email.toLowerCase() ||
+          estData?.email?.toLowerCase() === profile.email.toLowerCase() ||
+          profile.establishmentId === estSnap.id;
+
+        if (!matchesOwner) {
+          await fbSignOut(auth);
+          throw new AuthError(
+            "O estabelecimento vinculado não possui correspondência de proprietário.",
+            "MERCHANT_OWNERSHIP_MISMATCH"
+          );
+        }
+
+        // Heal ownership fields if they are missing or don't match the current authenticated UID
+        if (
+          estData &&
+          (estData.ownerUid !== uid || estData.merchantUid !== uid || estData.merchantOwnerUid !== uid)
+        ) {
+          try {
+            await setDoc(estRef, {
+              ownerUid: uid,
+              merchantUid: uid,
+              merchantOwnerUid: uid
+            }, { merge: true });
+            console.log("Self-healed establishment owner fields for UID:", uid);
+          } catch (healError) {
+            console.warn("Failed to self-heal establishment owner fields:", healError);
+            // Non-blocking error, allow user to log in as they are already authorized in their profile
+          }
+        }
       }
 
       // Clean up mock session since real login succeeded
@@ -149,24 +264,106 @@ export const authService = {
 
   async resetPassword(email: string): Promise<void> {
     if (!auth) {
-      throw new AuthError("Serviço não inicializado.", "not-initialized");
+      throw new AuthError("O serviço de autenticação do Firebase não está disponível.", "auth/not-initialized");
     }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new AuthError("Informe seu e-mail.", "AUTH_EMAIL_EMPTY");
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      throw new AuthError("Digite um endereço de e-mail válido.", "AUTH_EMAIL_INVALID");
+    }
+
+    const publicAppUrl = PUBLIC_APP_URL || (typeof window !== 'undefined' ? window.location.origin : 'https://uaipertim.com.br');
+    const continueUrl = `${publicAppUrl}/login`;
+    const actionCodeSettings = {
+      url: continueUrl,
+      handleCodeInApp: false
+    };
+
+    const emailMascarado = maskEmailForLogging(normalizedEmail);
+    const firebaseProjectId = FIREBASE_CONFIG.projectId || "gen-lang-client-0673282457";
+
     try {
-      await fbResetEmail(auth, email);
-    } catch (error) {
-      // Do not rethrow specific auth/user-not-found error to avoid email enumeration
-      // But we can throw network error or invalid email format if useful.
-      // Actually, user wants us to show generic message ALWAYS:
-      // “Caso exista uma conta com esse e-mail, enviaremos as instruções de recuperação.”
-      // So we will handle this general response inside the UI itself, but we can log the real error.
-      console.log("Password reset requested for email, raw error:", error);
-      const code = error?.code;
-      if (code === "auth/invalid-email") {
-        throw new AuthError("O formato do e-mail inserido é inválido.", code);
+      // Try to call our backend custom reset password API endpoint
+      const response = await fetch('/api/auth/request-password-reset', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ email: normalizedEmail }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        // Check if fallback is possible in development
+        if (data.code === 'RESET_EMAIL_PROVIDER_NOT_CONFIGURED') {
+          const isDev = typeof window !== 'undefined' && 
+            (window.location.hostname === 'localhost' || 
+             window.location.hostname.includes('127.0.0.1') || 
+             window.location.hostname.includes('ais-dev') ||
+             // @ts-ignore
+             (import.meta as any).env?.DEV);
+
+          const allowFallback = (import.meta as any).env?.VITE_ALLOW_FIREBASE_RESET_FALLBACK !== 'false';
+
+          if (isDev && allowFallback) {
+            console.warn("SMTP provider not configured on development backend. Falling back to client-side Firebase Auth default reset.");
+            // Fall back to client-side Firebase Auth default password reset
+            await fbResetEmail(auth, normalizedEmail, actionCodeSettings);
+            console.log("Password reset request logged (fallback):", JSON.stringify({
+              action: "password_reset_requested_fallback",
+              emailMascarado,
+              firebaseProjectId,
+              resultCode: "SUCCESS"
+            }));
+            return;
+          }
+        }
+        throw new AuthError(data.error || "Erro ao solicitar recuperação de senha.", data.code || "unknown");
       }
-      if (code === "auth/network-request-failed") {
-        throw new AuthError("Falha de conexão. Verifique sua internet.", code);
+
+      console.log("Password reset request logged (custom API):", JSON.stringify({
+        action: "password_reset_requested_api",
+        emailMascarado,
+        firebaseProjectId,
+        resultCode: "SUCCESS"
+      }));
+    } catch (error: any) {
+      if (error instanceof AuthError) {
+        throw error;
       }
+      
+      const code = error?.code || "unknown";
+      console.error("Password reset error details:", error);
+
+      if (code === "auth/user-not-found") {
+        return;
+      }
+      if (code === "auth/invalid-email" || code === "AUTH_EMAIL_INVALID") {
+        throw new AuthError("Digite um endereço de e-mail válido.", "AUTH_EMAIL_INVALID");
+      }
+      if (code === "auth/too-many-requests" || code === "AUTH_TOO_MANY_REQUESTS") {
+        throw new AuthError("Muitas solicitações foram realizadas. Aguarde alguns minutos.", "AUTH_TOO_MANY_REQUESTS");
+      }
+      if (code === "auth/network-request-failed" || code === "AUTH_NETWORK_ERROR") {
+        throw new AuthError("Não foi possível enviar as instruções. Verifique sua conexão e tente novamente.", "AUTH_NETWORK_ERROR");
+      }
+      if (code === "auth/operation-not-allowed") {
+        throw new AuthError("A recuperação por e-mail está temporariamente indisponível.", "AUTH_EMAIL_PASSWORD_DISABLED");
+      }
+      if (code === "auth/unauthorized-continue-uri") {
+        throw new AuthError("Não foi possível iniciar a recuperação de senha agora.", "AUTH_UNAUTHORIZED_CONTINUE_URL");
+      }
+      if (code === "auth/missing-continue-uri") {
+        throw new AuthError("Não foi possível iniciar a recuperação de senha agora.", "AUTH_CONTINUE_URL_MISSING");
+      }
+
+      throw new AuthError(error.message || "Não foi possível enviar as instruções de recuperação de senha no momento. Tente novamente mais tarde.", code);
     }
   },
 

@@ -52,8 +52,25 @@ export const establishmentsRepository = {
     try {
       const docRef = doc(db, COLLECTION_NAME, est.id);
       
-      const street = est.address?.split(',')[0] || est.address || '';
-      const number = est.address?.split(',')[1]?.trim() || '';
+      let street = '';
+      let number = '';
+      let zipCode = est.cep || '';
+      let neighborhood = est.bairro || '';
+
+      if (typeof est.address === 'string') {
+        street = est.address.split(',')[0] || est.address || '';
+        number = est.address.split(',')[1]?.trim() || '';
+      } else if (est.address && typeof est.address === 'object') {
+        const addrObj = est.address as any;
+        street = addrObj.street || addrObj.logradouro || '';
+        number = addrObj.number || addrObj.numero || '';
+        if (addrObj.zipCode || addrObj.cep) {
+          zipCode = addrObj.zipCode || addrObj.cep;
+        }
+        if (addrObj.neighborhood || addrObj.bairro) {
+          neighborhood = addrObj.neighborhood || addrObj.bairro;
+        }
+      }
       
       const firestoreData = {
         id: est.id,
@@ -65,13 +82,25 @@ export const establishmentsRepository = {
         categoryId: est.category?.toLowerCase().replace(/\s+/g, '-') || 'outras',
         categoryName: est.category || '',
         description: est.description || null,
-        phone: est.phone || null,
+        phone: est.phone || est.legalContactPhone || null,
+        email: est.email || est.legalContactEmail || null,
+        owner: est.owner || est.legalContactName || null,
+        companyName: est.companyName || '',
+        legalName: est.companyName || '',
+        document: est.document || '',
+        taxDocument: est.document || '',
+        legalContactName: est.legalContactName || est.owner || '',
+        legalContactPhone: est.legalContactPhone || est.phone || '',
+        legalContactEmail: est.legalContactEmail || est.email || '',
+        ownerUid: est.ownerUid || est.merchantUid || null,
+        merchantUid: est.merchantUid || est.ownerUid || null,
+        merchantOwnerUid: est.ownerUid || est.merchantUid || null,
         address: {
           street: street || null,
           number: number || null,
           complement: null,
-          neighborhood: est.bairro || null,
-          zipCode: est.cep || null,
+          neighborhood: neighborhood || null,
+          zipCode: zipCode || null,
           cityName: est.cityName || est.city || '',
           state: est.state || 'MG'
         },
@@ -80,6 +109,11 @@ export const establishmentsRepository = {
         acceptingOrders: est.acceptingOrders !== undefined ? est.acceptingOrders : true,
         temporarilyPaused: est.temporarilyPaused !== undefined ? est.temporarilyPaused : false,
         suspended: est.suspended !== undefined ? est.suspended : false,
+        platformStatus: est.platformStatus || (est.active === false || est.suspended === true ? 'inactive' : 'active'),
+        operationalPause: est.operationalPause !== undefined ? est.operationalPause : (est.temporarilyPaused !== undefined ? est.temporarilyPaused : false),
+        archived: est.platformStatus === 'archived' || (est as any).archived === true,
+        archiveReason: (est as any).archiveReason || null,
+        deactivationReason: (est as any).deactivationReason || null,
         featured: est.featured || false,
         rating: est.rating || 4.5,
         deliveryFee: typeof est.deliveryFee === 'number' ? est.deliveryFee : 0,
@@ -96,8 +130,8 @@ export const establishmentsRepository = {
           creditCard: est.acceptCreditCard !== undefined ? est.acceptCreditCard : true,
           contactless: est.acceptContactless !== undefined ? est.acceptContactless : true
         },
-        logoUrl: est.image || null,
-        bannerUrl: est.image || null,
+        logoUrl: est.logoUrl || est.image || null,
+        bannerUrl: est.coverImageUrl || est.image || null,
         updatedAt: serverTimestamp()
       };
 

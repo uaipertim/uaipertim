@@ -95,7 +95,13 @@ export const Cadastro: React.FC = () => {
       });
 
       // 3. Post-registration redirect
-      navigate('/');
+      const redirectPath = sessionStorage.getItem('redirect_after_login');
+      sessionStorage.removeItem('redirect_after_login');
+      if (redirectPath) {
+        navigate(redirectPath);
+      } else {
+        navigate('/');
+      }
     } catch (err: any) {
       console.error("Registration component error:", err);
       setError(err.message || 'Erro ao efetuar cadastro. Tente novamente.');

@@ -11,6 +11,7 @@ interface PremiumOrderChatProps {
   order: Order;
   viewerRole: "customer" | "merchant";
   onClose: () => void;
+  highlightMessageId?: string;
 }
 
 const orderStatusLabel: Record<string, string> = {
@@ -35,17 +36,27 @@ const orderStatusColor: Record<string, string> = {
   recusado: 'bg-rose-50 text-rose-800 border-rose-200',
 };
 
-export const PremiumOrderChat: React.FC<PremiumOrderChatProps> = ({ order, viewerRole, onClose }) => {
+export const PremiumOrderChat: React.FC<PremiumOrderChatProps> = ({ order, viewerRole, onClose, highlightMessageId }) => {
   const [messages, setMessages] = useState<OrderChatMessage[]>([]);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  
+  const scrolledToHighlightRef = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const originalFocusRef = useRef<HTMLElement | null>(null);
+
+  // Track active chat order ID on window for duplicate prevention
+  useEffect(() => {
+    (window as any).__activeChatOrderId = order.id;
+    return () => {
+      (window as any).__activeChatOrderId = undefined;
+    };
+  }, [order.id]);
 
   // Focus management & Escape key to close
   useEffect(() => {
@@ -106,6 +117,33 @@ export const PremiumOrderChat: React.FC<PremiumOrderChatProps> = ({ order, viewe
     setShowScrollButton(false);
   };
 
+  // Scroll to highlight message or bottom when messages are loaded
+  useEffect(() => {
+    if (messages.length === 0 || loading) return;
+
+    if (!scrolledToHighlightRef.current) {
+      scrolledToHighlightRef.current = true;
+      
+      if (highlightMessageId) {
+        console.log(`[PremiumOrderChat] Attempting to scroll to highlighted message: ${highlightMessageId}`);
+        setTimeout(() => {
+          const element = document.getElementById(`msg-${highlightMessageId}`);
+          if (element) {
+            element.scrollIntoView({ behavior: 'auto', block: 'center' });
+            element.classList.add('bg-[#E94F2F]/10', 'transition-all', 'duration-1000');
+            setTimeout(() => {
+              element.classList.remove('bg-[#E94F2F]/10');
+            }, 2500);
+          } else {
+            scrollToBottom('auto');
+          }
+        }, 120);
+      } else {
+        scrollToBottom('auto');
+      }
+    }
+  }, [messages, loading, highlightMessageId]);
+
   // Scroll logic on new messages
   useEffect(() => {
     if (messages.length === 0) return;
@@ -113,13 +151,15 @@ export const PremiumOrderChat: React.FC<PremiumOrderChatProps> = ({ order, viewe
     const container = scrollRef.current;
     if (!container) return;
 
+    if (!scrolledToHighlightRef.current) return;
+
     const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 150;
     const lastMsg = messages[messages.length - 1];
     const isMine = lastMsg?.senderRole === viewerRole;
 
-    if (isAtBottom || isMine || messages.length === 1) {
+    if (isAtBottom || isMine) {
       setTimeout(() => {
-        scrollToBottom(messages.length === 1 ? 'auto' : 'smooth');
+        scrollToBottom('smooth');
       }, 60);
     } else {
       setShowScrollButton(true);
@@ -319,7 +359,7 @@ export const PremiumOrderChat: React.FC<PremiumOrderChatProps> = ({ order, viewe
                     </div>
                   )}
 
-                  <div className={`flex ${isMe ? 'justify-end' : 'justify-start'} ${consecutive ? 'mt-1' : 'mt-3'}`}>
+                  <div id={`msg-${msg.id}`} className={`flex ${isMe ? 'justify-end' : 'justify-start'} ${consecutive ? 'mt-1' : 'mt-3'}`}>
                     <div className={`max-w-[76%] ${isMe ? 'items-end' : 'items-start'} flex flex-col`}>
                       {!consecutive && !isMe && (
                         <span className="text-[10px] text-[#756B66] font-bold mb-1 ml-1.5">

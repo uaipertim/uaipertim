@@ -14,6 +14,8 @@ export interface Establishment {
   suspended?: boolean;
   featured: boolean;
   image: string;
+  logoUrl?: string | null;
+  coverImageUrl?: string | null;
   phone: string;
   email: string;
   owner: string;
@@ -38,4 +40,21 @@ export interface Establishment {
   acceptDeliveryPayment?: boolean;
   acceptPickupPayment?: boolean;
   description?: string;
+  platformStatus?: 'active' | 'inactive' | 'archived';
+  categoryName?: string;
+  operationalPause?: boolean;
+  legalContactName?: string;
+  legalContactPhone?: string;
+  legalContactEmail?: string;
+  ownerUid?: string;
+  merchantUid?: string;
+  deliverySettings?: {
+    enabled: boolean;
+    defaultDeliveryFee: number;
+    defaultMinimumOrderValue: number;
+    defaultAdditionalMinutes: number;
+    cityId: string;
+    cityName: string;
+    coverageMode?: 'entire_city' | 'listed_zones_only';
+  };
 }

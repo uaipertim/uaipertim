@@ -192,12 +192,32 @@ export const catalogMigrationService = {
         errors.push(`Estabelecimento ${e.id} possui cityId inválido: ${e.cityId}`);
       }
 
+      let street = '';
+      let number = '';
+      let zipCode = e.cep || '';
+      let neighborhood = e.bairro || '';
+
+      if (typeof e.address === 'string') {
+        street = e.address.split(',')[0] || e.address || '';
+        number = e.address.split(',')[1]?.trim() || '';
+      } else if (e.address && typeof e.address === 'object') {
+        const addrObj = e.address as any;
+        street = addrObj.street || addrObj.logradouro || '';
+        number = addrObj.number || addrObj.numero || '';
+        if (addrObj.zipCode || addrObj.cep) {
+          zipCode = addrObj.zipCode || addrObj.cep;
+        }
+        if (addrObj.neighborhood || addrObj.bairro) {
+          neighborhood = addrObj.neighborhood || addrObj.bairro;
+        }
+      }
+
       const addressObj = {
-        street: e.address?.split(',')[0] || e.address || null,
-        number: e.address?.split(',')[1]?.trim() || null,
+        street: street || null,
+        number: number || null,
         complement: null,
-        neighborhood: e.bairro || null,
-        zipCode: e.cep || null,
+        neighborhood: neighborhood || null,
+        zipCode: zipCode || null,
         cityName: e.cityName || city?.name || '',
         state: e.state || 'MG',
       };

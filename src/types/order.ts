@@ -8,7 +8,8 @@ export type OrderStatus =
   | 'pronto_retirada'
   | 'saiu_entrega'
   | 'concluido'
-  | 'recusado';
+  | 'recusado'
+  | 'cancelado';
 
 export interface OrderStatusHistoryEntry {
   status: OrderStatus;
@@ -71,6 +72,7 @@ export interface Order {
   subtotal: number;
   deliveryFee: number;
   discount: number;
+  couponCode?: string | null;
   total: number;
   paymentMethod: 'cash' | 'card_on_delivery' | 'pix_on_delivery' | 'pix' | 'entrega_cartao' | 'entrega_dinheiro';
   paymentStatus?: 'pending' | 'paid' | 'not_paid' | 'cancelled';
@@ -79,6 +81,7 @@ export interface Order {
   changeFor?: number | null;
   platformProcessedPayment?: boolean;
   deliveryType: 'entrega' | 'retirada';
+  fulfillmentType?: 'delivery' | 'pickup' | 'unknown';
   notes?: string;
   establishmentId: string;
   establishmentName: string;

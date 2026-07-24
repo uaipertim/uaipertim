@@ -16,6 +16,7 @@ export interface UserProfile {
     marketing: boolean;
     preferredFulfillment?: 'delivery' | 'pickup' | null;
     confirmCartClear: boolean;
+    notificationSoundEnabled?: boolean;
   };
   createdAt?: any;
   updatedAt?: any;

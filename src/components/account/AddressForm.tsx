@@ -9,13 +9,15 @@ interface AddressFormProps {
   onSubmit: (address: Omit<UserAddress, 'id'>) => Promise<void>;
   onCancel: () => void;
   submitButtonText?: string;
+  establishmentZones?: any[];
 }
 
 export const AddressForm: React.FC<AddressFormProps> = ({
   initialValues,
   onSubmit,
   onCancel,
-  submitButtonText = 'Salvar Endereço'
+  submitButtonText = 'Salvar Endereço',
+  establishmentZones
 }) => {
   const { neighborhoods } = useApp();
   const { userProfile } = useAuth();
@@ -27,7 +29,7 @@ export const AddressForm: React.FC<AddressFormProps> = ({
   const [street, setStreet] = useState(initialValues?.street || '');
   const [number, setNumber] = useState(initialValues?.number || '');
   const [complement, setComplement] = useState(initialValues?.complement || '');
-  const [neighborhood, setNeighborhood] = useState(initialValues?.neighborhood || (neighborhoods[0]?.name || ''));
+  const [neighborhood, setNeighborhood] = useState(initialValues?.neighborhood || '');
   const [cityId, setCityId] = useState<'sao-joao-batista-do-gloria-mg' | 'passos-mg'>(
     (initialValues?.cityId as any) || (userProfile?.cityId as any) || 'sao-joao-batista-do-gloria-mg'
   );
@@ -38,13 +40,31 @@ export const AddressForm: React.FC<AddressFormProps> = ({
   const [cepError, setCepError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [bairroType, setBairroType] = useState<'select' | 'input'>('select');
 
-  // Auto-set neighborhood if list loads and field is empty
+  const filteredNeighborhoods = neighborhoods.filter(n => n.cityId === cityId);
+
+  // Auto-set neighborhood if list loads or city changes
   useEffect(() => {
-    if (neighborhoods.length > 0 && !neighborhood) {
-      setNeighborhood(neighborhoods[0].name);
+    if (establishmentZones && establishmentZones.length > 0) {
+      setBairroType('select');
+      const exists = establishmentZones.some(z => z.neighborhoodName === neighborhood);
+      if (!exists) {
+        setNeighborhood(establishmentZones[0].neighborhoodName);
+      }
+    } else if (establishmentZones) {
+      setBairroType('input');
+    } else {
+      if (filteredNeighborhoods.length > 0) {
+        const exists = filteredNeighborhoods.some(n => n.name === neighborhood);
+        if (!exists) {
+          setNeighborhood(filteredNeighborhoods[0].name);
+        }
+      } else {
+        setNeighborhood('');
+      }
     }
-  }, [neighborhoods, neighborhood]);
+  }, [cityId, neighborhoods, neighborhood, establishmentZones]);
 
   // Brazilian Phone Mask
   const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -341,17 +361,53 @@ export const AddressForm: React.FC<AddressFormProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="space-y-1.5">
             <label className="text-[10px] font-black text-[#756B66] uppercase block">Bairro *</label>
-            <select
-              value={neighborhood}
-              onChange={(e) => setNeighborhood(e.target.value)}
-              className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold appearance-none cursor-pointer"
-            >
-              {neighborhoods.map((n) => (
-                <option key={n.id} value={n.name}>
-                  {n.name}
-                </option>
-              ))}
-            </select>
+            {bairroType === 'select' && establishmentZones && establishmentZones.length > 0 ? (
+              <div className="space-y-1">
+                <select
+                  value={neighborhood}
+                  onChange={(e) => {
+                    if (e.target.value === 'outro_bairro') {
+                      setBairroType('input');
+                      setNeighborhood('');
+                    } else {
+                      setNeighborhood(e.target.value);
+                    }
+                  }}
+                  className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold cursor-pointer"
+                >
+                  <option value="">Selecione o bairro...</option>
+                  {establishmentZones.map((z) => (
+                    <option key={z.id || z.neighborhoodName} value={z.neighborhoodName}>
+                      {z.neighborhoodName}
+                    </option>
+                  ))}
+                  <option value="outro_bairro">Outro bairro...</option>
+                </select>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <input
+                  type="text"
+                  required
+                  placeholder="Nome do seu bairro"
+                  value={neighborhood}
+                  onChange={(e) => setNeighborhood(e.target.value)}
+                  className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold"
+                />
+                {establishmentZones && establishmentZones.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBairroType('select');
+                      setNeighborhood(establishmentZones[0].neighborhoodName);
+                    }}
+                    className="text-[10px] text-[#E94F2F] font-bold hover:underline"
+                  >
+                    Voltar para lista de bairros
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="space-y-1.5">

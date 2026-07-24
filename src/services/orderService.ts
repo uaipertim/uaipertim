@@ -11,10 +11,14 @@ import {
   getDoc,
   serverTimestamp,
   DocumentSnapshot,
-  runTransaction
+  runTransaction,
+  Timestamp
 } from "firebase/firestore";
 import { db, auth } from "../lib/firebase";
 import { Order, OrderStatus } from "../types";
+import { createMerchantNewOrderNotification, createCustomerOrderStatusNotification } from "./notificationService";
+import { normalizeOrderStatus, canTransitionOrder } from "../utils/orderLifecycle";
+import { getTier, LoyaltyAccount } from "../lib/loyalty";
 
 export enum OperationType {
   CREATE = 'create',
@@ -92,6 +96,30 @@ function mapFirestoreDocToOrder(docSnap: DocumentSnapshot): Order {
     }
   }
 
+  // Canonical modality determination
+  let rawModality = data.fulfillmentType || data.deliveryType || data.deliveryMethod;
+  let canonicalModality: 'entrega' | 'retirada' | 'unknown' = 'unknown';
+
+  if (rawModality) {
+    const rawLower = String(rawModality).toLowerCase().trim();
+    if (['delivery', 'entrega', 'entregar'].includes(rawLower)) {
+      canonicalModality = 'entrega';
+    } else if (['pickup', 'retirada', 'retirar', 'balcao', 'takeaway'].includes(rawLower)) {
+      canonicalModality = 'retirada';
+    }
+  }
+
+  if (canonicalModality === 'unknown') {
+    console.error(`[Diagnostic] Missing or invalid modality for order ID ${docSnap.id}. Raw field data:`, {
+      fulfillmentType: data.fulfillmentType,
+      deliveryType: data.deliveryType,
+      deliveryMethod: data.deliveryMethod
+    });
+  }
+
+  // Canonical status determination
+  const canonicalStatus = data.status || data.orderStatus || "aguardando_confirmacao";
+
   // Support both legacy (Portuguese) fields and new fields requested
   return {
     ...data,
@@ -111,14 +139,16 @@ function mapFirestoreDocToOrder(docSnap: DocumentSnapshot): Order {
     paymentMethod: data.paymentMethod || "cash",
     paymentStatus: data.paymentStatus || "pending",
     platformProcessedPayment: data.platformProcessedPayment || false,
-    deliveryType: data.deliveryType || (data.fulfillmentType === "pickup" ? "retirada" : "entrega"),
+    deliveryType: canonicalModality,
+    fulfillmentType: canonicalModality === 'entrega' ? 'delivery' : (canonicalModality === 'retirada' ? 'pickup' : 'unknown'),
     notes: data.notes || "",
     establishmentId: data.establishmentId || "",
     establishmentName: data.establishmentName || "",
     cityId: data.cityId || "",
     cityName: data.cityName || "",
     state: data.state || "",
-    status: data.status || data.orderStatus || "aguardando_confirmacao",
+    status: canonicalStatus,
+    orderStatus: canonicalStatus, // Sync legacy status to prevent any client-side divergence
     statusHistory: data.statusHistory || [],
     chatLastMessage: data.chatLastMessage || null,
     chatLastMessageAt: data.chatLastMessageAt || null,
@@ -129,74 +159,131 @@ function mapFirestoreDocToOrder(docSnap: DocumentSnapshot): Order {
   } as Order;
 }
 
+function sanitizeFirestoreData(obj: any): any {
+  if (obj === undefined) return null;
+  if (obj === null) return null;
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeFirestoreData);
+  }
+  if (typeof obj === 'object') {
+    // Check for Firestore FieldValue or similar classes (e.g. Timestamp)
+    if (obj.constructor && obj.constructor.name !== 'Object' && obj.constructor.name !== 'Array') {
+      return obj;
+    }
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val !== undefined) {
+        cleaned[key] = sanitizeFirestoreData(val);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+}
+
 export const orderService = {
   /**
    * Save a new order to Firestore.
    */
-  async createOrder(orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName' | 'cityId' | 'cityName' | 'state'>, extraData: {
+  async createOrder(orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName' | 'cityId' | 'cityName' | 'state'> & { addressId?: string }, extraData: {
     establishmentId: string;
     establishmentName: string;
     cityId: string;
     cityName: string;
     state: string;
   }): Promise<Order> {
+    const firebaseUser = auth?.currentUser;
+
+    if (!firebaseUser?.uid) {
+      throw new Error("AUTH_REQUIRED_TO_CREATE_ORDER");
+    }
+
+    try {
+      const token = await firebaseUser.getIdToken();
+      const response = await fetch("/api/orders/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ orderData, extraData })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Erro ao processar o pedido de forma segura no servidor.");
+      }
+
+      const createdOrder = await response.json();
+      
+      // Send merchant notification on client side as a secondary system action if needed
+      try {
+        createMerchantNewOrderNotification(createdOrder, firebaseUser.uid);
+      } catch (e) {
+        console.warn("Notification trigger warning:", e);
+      }
+
+      return createdOrder as Order;
+    } catch (error: any) {
+      console.error("Error creating secure order:", error);
+      throw new Error(error.message || "Erro de rede ao criar pedido. Tente novamente.");
+    }
+  },
+
+  /**
+   * Link an orphaned order to a verified customer manually by administrator.
+   */
+  async linkOrderToCustomer(params: {
+    orderId: string;
+    adminId: string;
+    previousCustomerId: string | null;
+    newCustomerId: string;
+    reason: string;
+  }): Promise<void> {
     if (!db) {
       throw new Error("Conexão com o banco de dados não está disponível.");
     }
 
-    // Generate a unique ID starting with 'PL-'
-    const num = Math.floor(1000 + Math.random() * 9000);
-    const orderId = `PL-${num}`;
-
-    const timestamp = new Date().toISOString();
-
-    const orderPayload = {
-      orderNumber: orderId,
-      customerId: orderData.customerId || auth?.currentUser?.uid || "anonymous",
-      customerName: orderData.customerName,
-      customerPhone: orderData.customerPhone,
-      establishmentId: extraData.establishmentId,
-      establishmentName: extraData.establishmentName,
-      cityId: extraData.cityId,
-      cityName: extraData.cityName,
-      state: extraData.state,
-      fulfillmentType: orderData.deliveryType === "retirada" ? "pickup" : "delivery",
-      deliveryType: orderData.deliveryType,
-      items: orderData.items,
-      subtotal: orderData.subtotal,
-      deliveryFee: orderData.deliveryFee,
-      discount: orderData.discount,
-      total: orderData.total,
-      paymentMethod: orderData.paymentMethod,
-      paymentStatus: orderData.paymentStatus || 'pending',
-      platformProcessedPayment: false,
-      orderStatus: 'aguardando_confirmacao',
-      status: 'aguardando_confirmacao',
-      statusHistory: [
-        { status: 'aguardando_confirmacao', timestamp }
-      ],
-      customerAddress: orderData.customerAddress,
-      deliveryAddress: orderData.customerAddress,
-      notes: orderData.notes || "",
-      changeRequired: orderData.changeRequired || false,
-      changeFor: orderData.changeFor || null,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp()
-    };
-
-    try {
-      await setDoc(doc(db, "orders", orderId), orderPayload);
-      
-      // Return a complete Order object mapped
-      return {
-        ...orderPayload,
-        id: orderId,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      } as any as Order;
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `orders/${orderId}`);
+    // 1. Verify target customer exists and has customer role
+    const userDocRef = doc(db, "users", params.newCustomerId);
+    const userDocSnap = await getDoc(userDocRef);
+    if (!userDocSnap.exists()) {
+      throw new Error(`O UID de cliente "${params.newCustomerId}" não foi encontrado no banco de dados.`);
     }
+
+    const userData = userDocSnap.data();
+    if (userData?.role !== "customer") {
+      throw new Error(`O usuário com UID "${params.newCustomerId}" possui cargo "${userData?.role}" e não pode ser vinculado como cliente.`);
+    }
+
+    // 2. Update order customer details and append to audit history
+    const orderDocRef = doc(db, "orders", params.orderId);
+    const orderDocSnap = await getDoc(orderDocRef);
+    if (!orderDocSnap.exists()) {
+      throw new Error(`Pedido com ID "${params.orderId}" não encontrado.`);
+    }
+
+    const orderData = orderDocSnap.data();
+    const auditHistory = orderData.linkingAuditHistory || [];
+    
+    const auditEntry = {
+      adminId: params.adminId,
+      previousCustomerId: params.previousCustomerId || "anonymous",
+      newCustomerId: params.newCustomerId,
+      reason: params.reason,
+      timestamp: new Date().toISOString()
+    };
+    
+    auditHistory.push(auditEntry);
+
+    await updateDoc(orderDocRef, {
+      customerId: params.newCustomerId,
+      customerName: userData.name || orderData.customerName,
+      customerPhone: userData.phone || orderData.customerPhone,
+      linkingAuditHistory: auditHistory,
+      updatedAt: serverTimestamp()
+    });
   },
 
   /**
@@ -463,75 +550,89 @@ export const orderService = {
     orderId: string,
     newStatus: OrderStatus,
     changedByUid?: string,
-    changedByRole?: 'merchant' | 'admin',
+    changedByRole?: 'merchant' | 'admin' | 'customer',
     note?: string | null
   ): Promise<void> {
     if (!db) return;
     const docRef = doc(db, "orders", orderId);
 
     try {
+      let isCompletedTransition = false;
       await runTransaction(db, async (transaction) => {
         const docSnap = await transaction.get(docRef);
         if (!docSnap.exists()) {
           throw new Error(`Pedido ${orderId} não existe.`);
         }
 
-        const data = docSnap.data();
-        const currentStatus = data.status || data.orderStatus || 'aguardando_confirmacao';
-        const deliveryType = data.deliveryType || (data.fulfillmentType === 'pickup' ? 'retirada' : 'entrega');
-
-        // Validation bypass for admin unless it is completed->preparing or cancelled->confirmed
-        const isBypass = changedByRole === 'admin';
-
-        if (currentStatus === 'concluido' && newStatus === 'em_preparacao') {
-          throw new Error("Transição inválida: Não é permitido retroceder de Concluído para Em Preparação.");
+        const data = docSnap.data() as Order;
+        
+        // Using centralized lifecycle utilities
+        const nextCanonicalStatus = normalizeOrderStatus(newStatus);
+        
+        if (!canTransitionOrder(data, nextCanonicalStatus)) {
+          throw new Error(`Transição inválida para o status: ${newStatus}`);
         }
-        if (currentStatus === 'recusado' && newStatus === 'confirmado') {
-          throw new Error("Transição inválida: Não é permitido retroceder de Recusado para Confirmado.");
-        }
+        
+        isCompletedTransition = (nextCanonicalStatus === 'concluido' && !data.loyaltyPointsGranted);
 
-        if (!isBypass) {
-          const allowedTransitions: Record<string, string[]> = {
-            aguardando_confirmacao: ['confirmado', 'recusado'],
-            confirmado: ['em_preparacao', 'recusado'],
-            em_preparacao: deliveryType === 'retirada' ? ['pronto_retirada', 'recusado'] : ['pronto', 'recusado'],
-            pronto: ['saiu_entrega', 'recusado'],
-            pronto_retirada: ['concluido', 'recusado'],
-            saiu_entrega: ['concluido', 'recusado'],
-            concluido: [],
-            recusado: []
-          };
+        const updateFields: any = {
+          status: nextCanonicalStatus,
+          updatedAt: serverTimestamp(),
+          statusHistory: [
+            ...(data.statusHistory || []),
+            {
+              status: nextCanonicalStatus,
+              timestamp: new Date().toISOString(),
+              changedByUid,
+              changedByRole,
+              note
+            }
+          ]
+        };
 
-          const allowed = allowedTransitions[currentStatus] || [];
-          if (!allowed.includes(newStatus)) {
-            throw new Error(`Transição inválida: Não é permitido mudar de ${currentStatus} para ${newStatus}.`);
+        if (isCompletedTransition) {
+          updateFields.loyaltyPointsGranted = true;
+
+          const accountRef = doc(db, 'loyaltyAccounts', data.customerId);
+          const accountSnap = await transaction.get(accountRef);
+
+          if (accountSnap.exists()) {
+            const accountData = accountSnap.data() as { pointsBalance: number; lifetimePoints: number };
+            const newLifetime = (accountData.lifetimePoints || 0) + 20;
+            transaction.update(accountRef, {
+              pointsBalance: (accountData.pointsBalance || 0) + 20,
+              lifetimePoints: newLifetime,
+              tier: getTier(newLifetime),
+              updatedAt: serverTimestamp()
+            });
+          } else {
+            transaction.set(accountRef, {
+              customerId: data.customerId,
+              pointsBalance: 20,
+              lifetimePoints: 20,
+              tier: 'Bronze',
+              welcomeBonusGranted: false,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            });
           }
+
+          const txRef = doc(collection(db, 'loyaltyTransactions'));
+          transaction.set(txRef, {
+            customerId: data.customerId,
+            type: 'completed_order',
+            points: 20,
+            orderId,
+            description: `Pontos por pedido concluído #${orderId.slice(-4)}`,
+            createdAt: serverTimestamp()
+          });
         }
 
-        const currentHistory = data.statusHistory || [];
-        const updatedHistory = [...currentHistory];
-
-        const timestamp = new Date().toISOString();
-        const uid = changedByUid || auth?.currentUser?.uid || 'system';
-        const role = changedByRole || 'merchant';
-
-        updatedHistory.push({
-          status: newStatus,
-          timestamp,
-          changedByUid: uid,
-          changedByRole: role,
-          note: note || null
-        });
-
-        transaction.update(docRef, {
-          status: newStatus,
-          orderStatus: newStatus,
-          statusHistory: updatedHistory,
-          updatedAt: serverTimestamp()
-        });
+        transaction.update(docRef, updateFields);
       });
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `orders/${orderId}`);
+      handleFirestoreError(error, OperationType.UPDATE, `orders/${orderId}`);
+      throw error;
     }
   },
 

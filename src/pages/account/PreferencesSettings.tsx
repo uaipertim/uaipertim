@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useApp } from '../../context/AppContext';
 import { Sliders, Bell, Mail, ShoppingBag, Bike, ToggleLeft, ToggleRight, CheckSquare, Square, AlertCircle } from 'lucide-react';
+import { PushNotificationControl } from '../../components/notifications/PushNotificationControl';
 
 export const PreferencesSettings: React.FC = () => {
   const { userProfile, updateUserProfile } = useAuth();
@@ -52,6 +53,9 @@ export const PreferencesSettings: React.FC = () => {
         </div>
       )}
 
+      {/* Push Notification Integration */}
+      <PushNotificationControl variant="page" />
+
       <div className="bg-white rounded-3xl border border-[#EADFD8] shadow-xs divide-y divide-[#F7F4EF]">
         {/* Notifications Preference */}
         <div className="p-6 space-y-4">
@@ -60,9 +64,9 @@ export const PreferencesSettings: React.FC = () => {
               <Bell className="w-5 h-5" />
             </div>
             <div className="space-y-1">
-              <h4 className="text-sm font-extrabold text-[#201A17]">Notificações e Avisos</h4>
+              <h4 className="text-sm font-extrabold text-[#201A17]">Alertas E-mail</h4>
               <p className="text-[11px] text-[#756B66] font-semibold leading-relaxed">
-                Escolha como deseja receber as atualizações sobre o andamento e a entrega dos seus pedidos.
+                Escolha como deseja receber as atualizações sobre o andamento e a entrega dos seus pedidos via e-mail.
               </p>
             </div>
           </div>

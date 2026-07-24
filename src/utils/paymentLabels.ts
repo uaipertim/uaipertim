@@ -23,7 +23,7 @@ export function getPaymentMethodLabel(
     return isPickup ? "Cartão na retirada" : "Cartão na entrega";
   }
   if (paymentMethod === 'pix_on_delivery' || paymentMethod === 'pix') {
-    return isPickup ? "Pix na retirada" : "Pix na entrega";
+    return "Pix diretamente ao estabelecimento";
   }
 
   return PAYMENT_METHOD_LABELS[paymentMethod] || paymentMethod;

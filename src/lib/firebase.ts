@@ -9,16 +9,11 @@ import {
   Auth
 } from "firebase/auth";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDkLqmCTFFqaIsdj6RoU2QCwNiITBEsUTo",
-  authDomain: "gen-lang-client-0673282457.firebaseapp.com",
-  projectId: "gen-lang-client-0673282457",
-  storageBucket: "gen-lang-client-0673282457.firebasestorage.app",
-  messagingSenderId: "271251032954",
-  appId: "1:271251032954:web:31afabc67be3533665e4c3"
-};
+import { FIREBASE_CONFIG, FIRESTORE_DATABASE_ID } from "../config/environment";
 
-const databaseId = "ai-studio-uaipertim-1ec226bc-5361-4d8f-93aa-92f62786acfe";
+const firebaseConfig = FIREBASE_CONFIG;
+
+const databaseId = FIRESTORE_DATABASE_ID;
 
 let app;
 let db;
@@ -37,6 +32,12 @@ try {
   auth = getAuth(app);
   isFirebaseConnected = true;
   console.log("Firebase initialized successfully with database:", databaseId);
+  console.log("FRONTEND_FIREBASE_DIAGNOSTIC", {
+    apiKeyPrefixMascarado: firebaseConfig.apiKey.substring(0, 9) + "***",
+    authDomain: firebaseConfig.authDomain,
+    projectId: firebaseConfig.projectId,
+    appIdMascarado: firebaseConfig.appId.substring(0, 16) + "***"
+  });
 } catch (error) {
   console.error("Error initializing Firebase:", error);
 }

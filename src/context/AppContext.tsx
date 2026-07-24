@@ -10,7 +10,8 @@ import {
   DeliveryNeighborhood, 
   BusinessHours,
   OrderStatus,
-  City
+  City,
+  MenuCategory
 } from '../types';
 import { 
   CITIES,
@@ -27,11 +28,12 @@ import { canEstablishmentReceiveOrders } from '../utils/establishmentUtils';
 import { APP_ENV, OFFICIAL_APP_DATA_VERSION } from '../config';
 import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot, query, collection, orderBy } from 'firebase/firestore';
+import { doc, onSnapshot, query, collection, orderBy, collectionGroup } from 'firebase/firestore';
 import { orderService } from '../services/orderService';
 import { citiesRepository } from '../repositories/citiesRepository';
 import { establishmentsRepository } from '../repositories/establishmentsRepository';
 import { productsRepository } from '../repositories/productsRepository';
+import { menuCategoriesRepository } from '../repositories/menuCategoriesRepository';
 import { normalizeProductFromFirestore, normalizeEstablishmentFromFirestore } from '../services/productNormalizer';
 
 
@@ -51,6 +53,8 @@ interface AppContextType {
   setEstablishments: React.Dispatch<React.SetStateAction<Establishment[]>>;
   products: Record<string, Product[]>;
   setProducts: React.Dispatch<React.SetStateAction<Record<string, Product[]>>>;
+  menuCategories: Record<string, MenuCategory[]>;
+  setMenuCategories: React.Dispatch<React.SetStateAction<Record<string, MenuCategory[]>>>;
   orders: Order[];
   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
   ordersLoading: boolean;
@@ -71,20 +75,23 @@ interface AppContextType {
   setFeedbacks: React.Dispatch<React.SetStateAction<Feedback[]>>;
   
   // Actions
-  placeOrder: (orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName'>) => Promise<Order>;
+  placeOrder: (orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName'> & { addressId?: string }) => Promise<Order>;
   updateOrderStatus: (orderId: string, newStatus: OrderStatus) => void;
   updateOrderPaymentStatus: (orderId: string, newPaymentStatus: 'pending' | 'paid' | 'not_paid' | 'cancelled') => void;
-  addOrUpdateProduct: (establishmentId: string, product: Product) => void;
+  addOrUpdateProduct: (establishmentId: string, product: Product, options?: { silent?: boolean }) => Promise<void>;
   deleteProduct: (establishmentId: string, productId: string) => void;
+  addOrUpdateMenuCategory: (establishmentId: string, category: MenuCategory) => Promise<void>;
+  deleteMenuCategory: (establishmentId: string, categoryId: string) => Promise<void>;
   resetDemo: () => void;
   
   // Toast
   toasts: ToastMessage[];
-  showToast: (message: string, type?: 'success' | 'error' | 'info') => void;
+  showToast: (message: string, type?: 'success' | 'error' | 'info', id?: string) => void;
   dismissToast: (id: string) => void;
 
   // Firebase Database Connection Status
   connectionStatus: ConnectionStatus | null;
+  retryConnection: () => void;
 
   // Admin Filters for real-time synchronization
   adminFilters: {
@@ -209,12 +216,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [environment, setEnvironment] = useState<AppEnvironment>('cliente');
   const [selectedEstablishmentId, setSelectedEstablishmentId] = useState<string>('pizzaria-da-praca');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
+  const [connectionRetryTrigger, setConnectionRetryTrigger] = useState(0);
 
   useEffect(() => {
     checkFirebaseConnection().then((status) => {
       setConnectionStatus(status);
     });
-  }, []);
+  }, [connectionRetryTrigger]);
+
+  const retryConnection = () => {
+    setConnectionStatus(null);
+    setConnectionRetryTrigger(prev => prev + 1);
+  };
 
 
   const [selectedCity, setSelectedCityState] = useState<City>(() => {
@@ -337,6 +350,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const products = productsState;
 
+  const [menuCategoriesState, setMenuCategoriesState] = useState<Record<string, MenuCategory[]>>({});
+
+  const setMenuCategories = (
+    value: Record<string, MenuCategory[]> | ((prev: Record<string, MenuCategory[]>) => Record<string, MenuCategory[]>)
+  ) => {
+    setMenuCategoriesState((prev) => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      
+      if (!isDemo && catalogDataSource === 'firestore') {
+        Object.entries(next).forEach(([estId, nextList]) => {
+          const prevList = prev[estId] || [];
+          
+          nextList.forEach((newCat) => {
+            const oldCat = prevList.find((c) => c.id === newCat.id);
+            if (!oldCat || JSON.stringify(oldCat) !== JSON.stringify(newCat)) {
+              menuCategoriesRepository.saveMenuCategory(estId, newCat).catch((err) => {
+                console.error(`Error saving category ${newCat.id} to Firestore:`, err);
+              });
+            }
+          });
+        });
+      } else {
+        localStorage.setItem('pl_menu_categories', JSON.stringify(next));
+      }
+      return next;
+    });
+  };
+
+  const menuCategories = menuCategoriesState;
+
   // Cities Subscription
   useEffect(() => {
     if (isDemo || catalogDataSource !== 'firestore' || !db) {
@@ -368,20 +411,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const saved = localStorage.getItem('pl_establishments');
       let list = saved ? JSON.parse(saved) : [...INITIAL_ESTABLISHMENTS];
       list = ensureDemoEstablishments(list);
-      setEstablishmentsState(list.map(e => ({
-        ...e,
-        open: e.open !== undefined ? e.open : (e.isOpen !== undefined ? e.isOpen : true),
-        acceptingOrders: e.acceptingOrders !== undefined ? e.acceptingOrders : true,
-        temporarilyPaused: e.temporarilyPaused !== undefined ? e.temporarilyPaused : false,
-        suspended: e.suspended !== undefined ? e.suspended : false,
-        acceptCash: e.acceptCash !== undefined ? e.acceptCash : true,
-        acceptPix: e.acceptPix !== undefined ? e.acceptPix : true,
-        acceptDebitCard: e.acceptDebitCard !== undefined ? e.acceptDebitCard : true,
-        acceptCreditCard: e.acceptCreditCard !== undefined ? e.acceptCreditCard : true,
-        acceptContactless: e.acceptContactless !== undefined ? e.acceptContactless : true,
-        acceptDeliveryPayment: e.acceptDeliveryPayment !== undefined ? e.acceptDeliveryPayment : true,
-        acceptPickupPayment: e.acceptPickupPayment !== undefined ? e.acceptPickupPayment : true,
-      })));
+      setEstablishmentsState(list.map(e => {
+        const normalized = normalizeEstablishmentFromFirestore(e, e.id);
+        return {
+          ...normalized,
+          open: e.open !== undefined ? e.open : (e.isOpen !== undefined ? e.isOpen : true),
+          acceptingOrders: e.acceptingOrders !== undefined ? e.acceptingOrders : true,
+          temporarilyPaused: e.temporarilyPaused !== undefined ? e.temporarilyPaused : false,
+          suspended: e.suspended !== undefined ? e.suspended : false,
+          acceptCash: e.acceptCash !== undefined ? e.acceptCash : true,
+          acceptPix: e.acceptPix !== undefined ? e.acceptPix : true,
+          acceptDebitCard: e.acceptDebitCard !== undefined ? e.acceptDebitCard : true,
+          acceptCreditCard: e.acceptCreditCard !== undefined ? e.acceptCreditCard : true,
+          acceptContactless: e.acceptContactless !== undefined ? e.acceptContactless : true,
+          acceptDeliveryPayment: e.acceptDeliveryPayment !== undefined ? e.acceptDeliveryPayment : true,
+          acceptPickupPayment: e.acceptPickupPayment !== undefined ? e.acceptPickupPayment : true,
+        };
+      }));
       return;
     }
 
@@ -405,7 +451,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     if (isDemo || catalogDataSource !== 'firestore' || !db) {
       const saved = localStorage.getItem('pl_products');
-      setProductsState(saved ? JSON.parse(saved) : INITIAL_PRODUCTS);
+      const loadedProducts = saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
+      
+      const savedCats = localStorage.getItem('pl_menu_categories');
+      if (!savedCats) {
+        const initialCats: Record<string, MenuCategory[]> = {};
+        Object.keys(loadedProducts).forEach(estId => {
+          const prods = loadedProducts[estId] || [];
+          const uniqueCats = Array.from(new Set(prods.map((p: any) => p.category).filter(Boolean)));
+          initialCats[estId] = uniqueCats.map((catNameObj, idx) => {
+            const catName = String(catNameObj);
+            const normName = catName.toLowerCase().trim();
+            const catId = `${estId}-${normName.replace(/\s+/g, '-')}`;
+            return {
+              id: catId,
+              establishmentId: estId,
+              name: catName,
+              normalizedName: normName,
+              active: true,
+              sortOrder: idx + 1,
+            };
+          });
+
+          prods.forEach((p: any) => {
+            if (!p.menuCategoryId) {
+              const normName = p.category?.toLowerCase().trim();
+              const matchedCat = initialCats[estId].find(c => c.normalizedName === normName);
+              if (matchedCat) {
+                p.menuCategoryId = matchedCat.id;
+                p.menuCategoryName = matchedCat.name;
+              }
+            }
+          });
+        });
+        localStorage.setItem('pl_menu_categories', JSON.stringify(initialCats));
+        localStorage.setItem('pl_products', JSON.stringify(loadedProducts));
+        setMenuCategoriesState(initialCats);
+      }
+      
+      setProductsState(loadedProducts);
       return;
     }
 
@@ -426,6 +510,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     return () => unsub();
+  }, [isDemo, catalogDataSource]);
+
+  // Menu Categories Subscription
+  useEffect(() => {
+    if (isDemo || catalogDataSource !== 'firestore' || !db) {
+      const saved = localStorage.getItem('pl_menu_categories');
+      if (saved) {
+        setMenuCategoriesState(JSON.parse(saved));
+      }
+      return;
+    }
+
+    try {
+      const q = collectionGroup(db, 'menuCategories');
+      const unsub = onSnapshot(q, (snapshot) => {
+        const record: Record<string, MenuCategory[]> = {};
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          const estId = data.establishmentId || doc.ref.parent.parent?.id || 'unknown';
+          if (!record[estId]) {
+            record[estId] = [];
+          }
+          record[estId].push({
+            id: doc.id,
+            establishmentId: estId,
+            name: data.name || '',
+            normalizedName: data.normalizedName || '',
+            active: data.active !== false,
+            sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 0,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
+          });
+        });
+        
+        Object.keys(record).forEach(estId => {
+          record[estId].sort((a, b) => a.sortOrder - b.sortOrder);
+        });
+
+        setMenuCategoriesState(record);
+      }, (err) => {
+        console.error("Menu categories subscription error:", err);
+      });
+
+      return () => unsub();
+    } catch (error) {
+      console.error("Error setting up menuCategories subscription:", error);
+    }
   }, [isDemo, catalogDataSource]);
 
   const [orders, setOrders] = useState<Order[]>([]);
@@ -564,11 +695,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Toasts
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
-    const id = Math.random().toString(36).substring(2, 9);
-    setToasts((prev) => [...prev, { id, type, message }]);
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success', id?: string) => {
+    const toastId = id || Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => {
+      // Deduplicate: do not add the same toast if it already exists in the active queue
+      if (prev.some((t) => t.id === toastId || (t.message === message && t.type === type))) {
+        return prev;
+      }
+      return [...prev, { id: toastId, type, message }];
+    });
     setTimeout(() => {
-      dismissToast(id);
+      dismissToast(toastId);
     }, 4000);
   };
 
@@ -644,11 +781,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       if (existingIndex > -1) {
-        const updated = [...prev];
-        updated[existingIndex].quantity += item.quantity;
-        return updated;
+        return prev.map((curr, idx) => {
+          if (idx === existingIndex) {
+            return {
+              ...curr,
+              quantity: curr.quantity + item.quantity
+            };
+          }
+          return curr;
+        });
       }
-      return [...prev, item];
+      return [...prev, { ...item }];
     });
     showToast(`${item.product.name} adicionado ao carrinho!`, 'success');
   };
@@ -662,14 +805,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
     setCart((prev) => {
-      const updated = [...prev];
-      const newQty = updated[index].quantity + change;
+      const item = prev[index];
+      if (!item) return prev;
+      const newQty = item.quantity + change;
       if (newQty <= 0) {
-        updated.splice(index, 1);
+        return prev.filter((_, idx) => idx !== index);
       } else {
-        updated[index].quantity = newQty;
+        return prev.map((curr, idx) => {
+          if (idx === index) {
+            return {
+              ...curr,
+              quantity: newQty
+            };
+          }
+          return curr;
+        });
       }
-      return updated;
     });
   };
 
@@ -698,7 +849,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Configurações de horários salvas!', 'success');
   };
 
-  const placeOrder = async (orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName' | 'cityId' | 'cityName' | 'state'>): Promise<Order> => {
+  const placeOrder = async (orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName' | 'cityId' | 'cityName' | 'state'> & { addressId?: string }): Promise<Order> => {
     const est = establishments.find(e => e.id === selectedEstablishmentId) || establishments[0];
     if (!canEstablishmentReceiveOrders(est)) {
       throw new Error("O estabelecimento não pode receber pedidos neste momento.");
@@ -786,11 +937,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const addOrUpdateProduct = (establishmentId: string, product: Product) => {
+  const addOrUpdateProduct = async (establishmentId: string, product: Product, options?: { silent?: boolean }) => {
     let isUpdate = false;
     const currentList = products[establishmentId] || [];
     if (currentList.some(p => p.id === product.id)) {
       isUpdate = true;
+    }
+
+    if (!isDemo && catalogDataSource === 'firestore') {
+      try {
+        await productsRepository.saveProduct(establishmentId, product);
+      } catch (err) {
+        console.error("Error saving product to Firestore:", err);
+        showToast("Erro ao salvar o produto no servidor.", 'error');
+        throw err;
+      }
     }
 
     setProducts((prev) => {
@@ -810,10 +971,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
     });
 
-    if (isUpdate) {
-      showToast('Produto atualizado com sucesso!', 'success');
-    } else {
-      showToast('Produto adicionado ao cardápio!', 'success');
+    if (!options?.silent) {
+      if (isUpdate) {
+        showToast('Produto atualizado com sucesso!', 'success', `product-update-success-${product.id}`);
+      } else {
+        showToast('Produto adicionado ao cardápio!', 'success', `product-add-success-${product.id}`);
+      }
     }
   };
 
@@ -843,9 +1006,75 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const addOrUpdateMenuCategory = async (establishmentId: string, category: MenuCategory) => {
+    let isUpdate = false;
+    const currentList = menuCategoriesState[establishmentId] || [];
+    if (currentList.some(c => c.id === category.id)) {
+      isUpdate = true;
+    }
+
+    if (!isDemo && catalogDataSource === 'firestore') {
+      try {
+        await menuCategoriesRepository.saveMenuCategory(establishmentId, category);
+      } catch (err) {
+        console.error("Error saving menu category to Firestore:", err);
+        showToast("Erro ao salvar a categoria no servidor.", 'error');
+        throw err;
+      }
+    }
+
+    setMenuCategories((prev) => {
+      const currentList = prev[establishmentId] || [];
+      const index = currentList.findIndex(c => c.id === category.id);
+      const updatedList = [...currentList];
+      
+      if (index > -1) {
+        updatedList[index] = category;
+      } else {
+        updatedList.push(category);
+      }
+
+      updatedList.sort((a, b) => a.sortOrder - b.sortOrder);
+
+      return {
+        ...prev,
+        [establishmentId]: updatedList
+      };
+    });
+
+    if (isUpdate) {
+      showToast('Categoria atualizada com sucesso!', 'success');
+    } else {
+      showToast('Categoria criada com sucesso!', 'success');
+    }
+  };
+
+  const deleteMenuCategory = async (establishmentId: string, categoryId: string) => {
+    if (!isDemo && catalogDataSource === 'firestore') {
+      try {
+        await menuCategoriesRepository.deleteMenuCategory(establishmentId, categoryId);
+      } catch (err) {
+        console.error("Error deleting menu category:", err);
+        showToast('Erro ao excluir categoria.', 'error');
+        throw err;
+      }
+    }
+
+    setMenuCategories((prev) => {
+      const currentList = prev[establishmentId] || [];
+      const updatedList = currentList.filter(c => c.id !== categoryId);
+      return {
+        ...prev,
+        [establishmentId]: updatedList
+      };
+    });
+    showToast('Categoria excluída com sucesso!', 'info');
+  };
+
   const resetDemo = () => {
     localStorage.removeItem('pl_establishments');
     localStorage.removeItem('pl_products');
+    localStorage.removeItem('pl_menu_categories');
     localStorage.removeItem('pl_orders');
     localStorage.removeItem('pl_cart');
     localStorage.removeItem('pl_neighborhoods');
@@ -857,6 +1086,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setEstablishments(INITIAL_ESTABLISHMENTS);
     setProducts(INITIAL_PRODUCTS);
+    setMenuCategoriesState({});
     setOrders(INITIAL_ORDERS);
     setCart([]);
     setNeighborhoodsState(INITIAL_NEIGHBORHOODS);
@@ -884,6 +1114,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setEstablishments,
       products,
       setProducts,
+      menuCategories,
+      setMenuCategories,
       orders,
       setOrders,
       ordersLoading,
@@ -907,11 +1139,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateOrderPaymentStatus,
       addOrUpdateProduct,
       deleteProduct,
+      addOrUpdateMenuCategory,
+      deleteMenuCategory,
       resetDemo,
       toasts,
       showToast,
       dismissToast,
       connectionStatus,
+      retryConnection,
       adminFilters,
       setAdminFilters
     }}>

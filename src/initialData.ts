@@ -496,11 +496,19 @@ export const INITIAL_PRODUCTS: Record<string, Product[]> = {
 };
 
 export const INITIAL_NEIGHBORHOODS: DeliveryNeighborhood[] = [
-  { id: 'n-1', name: 'Centro', fee: 5.00, timeEstimate: '30-40 min' },
-  { id: 'n-2', name: 'Jardim Planalto', fee: 7.00, timeEstimate: '35-45 min' },
-  { id: 'n-3', name: 'Vila Nova', fee: 8.00, timeEstimate: '40-50 min' },
-  { id: 'n-4', name: 'Parque das Flores', fee: 10.00, timeEstimate: '45-55 min' },
-  { id: 'n-5', name: 'Distrito Industrial', fee: 12.00, timeEstimate: '50-60 min' },
+  // São João Batista do Glória - MG
+  { id: 'gloria-centro', name: 'Centro', fee: 5.00, timeEstimate: '30-40 min', cityId: 'sao-joao-batista-do-gloria-mg' },
+  { id: 'gloria-jardim-planalto', name: 'Jardim Planalto', fee: 7.00, timeEstimate: '35-45 min', cityId: 'sao-joao-batista-do-gloria-mg' },
+  { id: 'gloria-vila-nova', name: 'Vila Nova', fee: 8.00, timeEstimate: '40-50 min', cityId: 'sao-joao-batista-do-gloria-mg' },
+  { id: 'gloria-parque-das-flores', name: 'Parque das Flores', fee: 10.00, timeEstimate: '45-55 min', cityId: 'sao-joao-batista-do-gloria-mg' },
+  { id: 'gloria-distrito-industrial', name: 'Distrito Industrial', fee: 12.00, timeEstimate: '50-60 min', cityId: 'sao-joao-batista-do-gloria-mg' },
+  
+  // Passos - MG
+  { id: 'passos-centro', name: 'Centro', fee: 6.00, timeEstimate: '25-35 min', cityId: 'passos-mg' },
+  { id: 'passos-coimbras', name: 'Coimbras', fee: 8.00, timeEstimate: '30-40 min', cityId: 'passos-mg' },
+  { id: 'passos-bela-vista', name: 'Bela Vista', fee: 8.00, timeEstimate: '30-40 min', cityId: 'passos-mg' },
+  { id: 'passos-penha', name: 'Penha', fee: 9.00, timeEstimate: '35-45 min', cityId: 'passos-mg' },
+  { id: 'passos-muarama', name: 'Muarama', fee: 10.00, timeEstimate: '35-45 min', cityId: 'passos-mg' }
 ];
 
 export const INITIAL_BUSINESS_HOURS: BusinessHours[] = [

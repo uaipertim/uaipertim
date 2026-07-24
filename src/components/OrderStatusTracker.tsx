@@ -108,7 +108,7 @@ export const OrderStatusTracker: React.FC<OrderStatusTrackerProps> = ({ order })
       case 'confirmado':
         return {
           title: 'Seu pedido foi confirmado!',
-          description: `A equipe de ${order.establishmentName} já confirmou seu pedido e está organizando a cozinha para iniciar o preparo.`,
+          description: `A equipe de ${order.establishmentName} já confirmou seu pedido e está processando-o.`,
           bg: 'bg-[#2F9E69]/5 border-[#2F9E69]/20',
           textTitle: 'text-[#201A17]',
           textDesc: 'text-[#756B66]',
@@ -119,7 +119,7 @@ export const OrderStatusTracker: React.FC<OrderStatusTrackerProps> = ({ order })
       case 'em_preparacao':
         return {
           title: 'Seu pedido está sendo preparado',
-          description: 'A cozinha já iniciou o preparo dos seus itens com ingredientes fresquinhos. Em breve ficará pronto para o próximo passo!',
+          description: 'O estabelecimento já iniciou o processamento dos seus itens. Em breve ficará pronto para o próximo passo!',
           bg: 'bg-orange-50 border-orange-100',
           textTitle: 'text-[#201A17]',
           textDesc: 'text-[#756B66]',
@@ -130,7 +130,7 @@ export const OrderStatusTracker: React.FC<OrderStatusTrackerProps> = ({ order })
       case 'pronto':
         return {
           title: 'Seu pedido está pronto!',
-          description: 'Tudo pronto e embalado com cuidado na temperatura certa. Agora ele está sendo encaminhado ao entregador parceiro.',
+          description: 'Tudo pronto e preparado com cuidado. Agora ele está sendo encaminhado ao entregador parceiro.',
           bg: 'bg-[#2F9E69]/5 border-[#2F9E69]/20',
           textTitle: 'text-[#201A17]',
           textDesc: 'text-[#756B66]',
@@ -141,7 +141,7 @@ export const OrderStatusTracker: React.FC<OrderStatusTrackerProps> = ({ order })
       case 'pronto_retirada':
         return {
           title: 'Seu pedido está pronto para retirada!',
-          description: `Tudo pronto! Você já pode ir até o estabelecimento ${order.establishmentName} para retirar seu pedido quentinho.`,
+          description: `Tudo pronto! Você já pode ir até o estabelecimento ${order.establishmentName} para retirar seu pedido.`,
           bg: 'bg-green-50 border-green-200',
           textTitle: 'text-green-900',
           textDesc: 'text-green-800',

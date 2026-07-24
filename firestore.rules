@@ -7,130 +7,297 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isUserDocExists(uid) {
-      return exists(/databases/$(database)/documents/users/$(uid));
-    }
-
-    function getUserRole(uid) {
-      return get(/databases/$(database)/documents/users/$(uid)).data.role;
-    }
-
     function getUserProfile(uid) {
       return get(/databases/$(database)/documents/users/$(uid)).data;
     }
 
-    function isAdmin() {
-      return isSignedIn()
-        && isUserDocExists(request.auth.uid)
-        && getUserRole(request.auth.uid) == "admin"
-        && getUserProfile(request.auth.uid).get("active", true) == true;
+    function isUserActive(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)) && 
+             get(/databases/$(database)/documents/users/$(uid)).data.get("active", true) == true;
     }
 
-    function isMerchant() {
-      return isSignedIn()
-        && isUserDocExists(request.auth.uid)
-        && getUserRole(request.auth.uid) == "merchant"
-        && getUserProfile(request.auth.uid).get("active", true) == true;
+    function isMerchant(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)) && 
+             get(/databases/$(database)/documents/users/$(uid)).data.get("active", true) == true &&
+             get(/databases/$(database)/documents/users/$(uid)).data.get("role", "") == "merchant";
     }
 
-    function isCustomer() {
-      return isSignedIn()
-        && isUserDocExists(request.auth.uid)
-        && getUserRole(request.auth.uid) == "customer"
-        && getUserProfile(request.auth.uid).get("active", true) == true;
+    function isCustomer(uid) {
+      return exists(/databases/$(database)/documents/users/$(uid)) && 
+             get(/databases/$(database)/documents/users/$(uid)).data.get("active", true) == true &&
+             get(/databases/$(database)/documents/users/$(uid)).data.get("role", "") == "customer";
+    }
+
+    function isAdmin(uid) {
+      return isSignedIn() && (
+        (request.auth.token.email != null && (
+          request.auth.token.email == "cloudviajandocomigo@gmail.com" ||
+          request.auth.token.email == "atendimento@viajandocomigo.com.br" ||
+          request.auth.token.email.endsWith("@viajandocomigo.com.br")
+        )) ||
+        (exists(/databases/$(database)/documents/users/$(uid)) && (
+          get(/databases/$(database)/documents/users/$(uid)).data.get("role", "") == "admin" ||
+          get(/databases/$(database)/documents/users/$(uid)).data.get("email", "") == "cloudviajandocomigo@gmail.com" ||
+          get(/databases/$(database)/documents/users/$(uid)).data.get("email", "") == "atendimento@viajandocomigo.com.br" ||
+          get(/databases/$(database)/documents/users/$(uid)).data.get("email", "").endsWith("@viajandocomigo.com.br")
+        ))
+      );
     }
 
     // --- Rules ---
 
     match /appConfig/public {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin(request.auth.uid);
     }
 
     match /appConfig/catalogMigrationV1 {
       allow read: if isSignedIn();
-      allow write: if isAdmin();
+      allow write: if isAdmin(request.auth.uid);
     }
 
     match /cities/{cityId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin(request.auth.uid);
+
+      match /neighborhoods/{neighborhoodId} {
+        allow read: if true;
+        allow write: if isAdmin(request.auth.uid);
+      }
     }
 
     match /establishments/{establishmentId} {
       allow read: if true;
-      allow write: if isAdmin() || (isMerchant() && getUserProfile(request.auth.uid).establishmentId == establishmentId);
+      allow write: if isAdmin(request.auth.uid) || (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == establishmentId);
+
+      match /deliveryZones/{zoneId} {
+        allow read: if true;
+        allow write: if isAdmin(request.auth.uid) || (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == establishmentId);
+      }
+
+      match /menuCategories/{categoryId} {
+        allow read: if true;
+        allow write: if isAdmin(request.auth.uid) || (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == establishmentId);
+      }
+    }
+
+    match /{path=**}/menuCategories/{categoryId} {
+      allow read: if true;
     }
 
     match /products/{productId} {
       allow read: if true;
-      allow write: if isAdmin() || (isMerchant() && getUserProfile(request.auth.uid).establishmentId == resource.data.establishmentId);
+      allow create: if isAdmin(request.auth.uid) || (
+        isMerchant(request.auth.uid) && 
+        getUserProfile(request.auth.uid).get("establishmentId", "") == request.resource.data.get("establishmentId", "")
+      );
+      allow update: if isAdmin(request.auth.uid) || (
+        isMerchant(request.auth.uid) && 
+        getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") &&
+        getUserProfile(request.auth.uid).get("establishmentId", "") == request.resource.data.get("establishmentId", "")
+      );
+      allow delete: if isAdmin(request.auth.uid) || (
+        isMerchant(request.auth.uid) && 
+        getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "")
+      );
     }
 
     match /users/{userId} {
-      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin(request.auth.uid));
+      allow write: if isAdmin(request.auth.uid) || (isSignedIn() && request.auth.uid == userId);
+
+      match /pushSubscriptions/{tokenId} {
+        allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin(request.auth.uid));
+      }
     }
 
     match /users/{userId}/addresses/{addressId} {
-      allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow read, write: if isSignedIn() && (request.auth.uid == userId || isAdmin(request.auth.uid));
     }
 
     match /orders/{orderId} {
-      allow create: if isSignedIn();
-      allow read: if isSignedIn() && (
-        isCustomer() && request.auth.uid == resource.data.customerId ||
-        isMerchant() && getUserProfile(request.auth.uid).establishmentId == resource.data.establishmentId ||
-        isAdmin()
+      allow create: if isAdmin(request.auth.uid) || (
+        request.auth != null &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "customer" &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true &&
+        request.resource.data.customerId == request.auth.uid &&
+        request.resource.data.status == "aguardando_confirmacao" &&
+        request.resource.data.customerId is string &&
+        request.resource.data.customerId != ""
+      );
+      allow get: if isSignedIn() && (
+        request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) ||
+        isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") ||
+        isAdmin(request.auth.uid)
+      );
+      allow list: if isSignedIn() && (
+        request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) ||
+        isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") ||
+        isAdmin(request.auth.uid)
       );
 
-      allow update: if isSignedIn() && (
+      allow update: if (isSignedIn() && (
         // Operational updates
-        (isAdmin() ||
-         (isMerchant() && getUserProfile(request.auth.uid).establishmentId == resource.data.establishmentId &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'orderStatus', 'statusHistory', 'paymentStatus', 'updatedAt'])) ||
-         (isCustomer() && request.auth.uid == resource.data.customerId &&
+        (isAdmin(request.auth.uid) ||
+         (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'orderStatus', 'statusHistory', 'paymentStatus', 'updatedAt', 'loyaltyPointsGranted'])) ||
+         (isCustomer(request.auth.uid) && request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
         ) ||
         // Customer sending chat metadatas
-        (isCustomer() && request.auth.uid == resource.data.customerId &&
+        (isCustomer(request.auth.uid) && request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatLastMessage', 'chatLastMessageAt', 'chatLastSenderRole', 'chatUnreadMerchant', 'chatMessageCount']) &&
-         request.resource.data.chatLastSenderRole == 'customer' && request.resource.data.chatLastMessage is string && request.resource.data.chatLastMessage.size() >= 1 && request.resource.data.chatLastMessage.size() <= 1000 && request.resource.data.chatLastMessageAt == request.time &&
-         request.resource.data.chatUnreadMerchant == resource.data.get("chatUnreadMerchant", 0) + 1 && request.resource.data.chatMessageCount == resource.data.get("chatMessageCount", 0) + 1
+         request.resource.data.get("chatLastSenderRole", "") == 'customer' && 
+         request.resource.data.get("chatLastMessage", "") is string && 
+         request.resource.data.get("chatLastMessage", "").size() >= 1 && 
+         request.resource.data.get("chatLastMessage", "").size() <= 1000 && 
+         request.resource.data.get("chatLastMessageAt", null) == request.time &&
+         request.resource.data.get("chatUnreadMerchant", 0) == resource.data.get("chatUnreadMerchant", 0) + 1 && 
+         request.resource.data.get("chatMessageCount", 0) == resource.data.get("chatMessageCount", 0) + 1
         ) ||
         // Merchant sending chat metadatas
-        (isMerchant() && getUserProfile(request.auth.uid).establishmentId == resource.data.establishmentId &&
+        (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatLastMessage', 'chatLastMessageAt', 'chatLastSenderRole', 'chatUnreadCustomer', 'chatMessageCount']) &&
-         request.resource.data.chatLastSenderRole == 'merchant' && request.resource.data.chatLastMessage is string && request.resource.data.chatLastMessage.size() >= 1 && request.resource.data.chatLastMessage.size() <= 1000 && request.resource.data.chatLastMessageAt == request.time &&
-         request.resource.data.chatUnreadCustomer == resource.data.get("chatUnreadCustomer", 0) + 1 && request.resource.data.chatMessageCount == resource.data.get("chatMessageCount", 0) + 1
+         request.resource.data.get("chatLastSenderRole", "") == 'merchant' && 
+         request.resource.data.get("chatLastMessage", "") is string && 
+         request.resource.data.get("chatLastMessage", "").size() >= 1 && 
+         request.resource.data.get("chatLastMessage", "").size() <= 1000 && 
+         request.resource.data.get("chatLastMessageAt", null) == request.time &&
+         request.resource.data.get("chatUnreadCustomer", 0) == resource.data.get("chatUnreadCustomer", 0) + 1 && 
+         request.resource.data.get("chatMessageCount", 0) == resource.data.get("chatMessageCount", 0) + 1
         ) ||
         // Customer marking as read
-        (isCustomer() && request.auth.uid == resource.data.customerId &&
+        (isCustomer(request.auth.uid) && request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatUnreadCustomer']) &&
-         resource.data.get("chatUnreadCustomer", 0) > 0 && request.resource.data.chatUnreadCustomer == 0
+         resource.data.get("chatUnreadCustomer", 0) > 0 && 
+         request.resource.data.get("chatUnreadCustomer", 0) == 0
         ) ||
         // Merchant marking as read
-        (isMerchant() && getUserProfile(request.auth.uid).establishmentId == resource.data.establishmentId &&
+        (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatUnreadMerchant']) &&
-         resource.data.get("chatUnreadMerchant", 0) > 0 && request.resource.data.chatUnreadMerchant == 0
+         resource.data.get("chatUnreadMerchant", 0) > 0 && 
+         request.resource.data.get("chatUnreadMerchant", 0) == 0
         )
+      )) || (
+        // Guest sending chat metadatas for anonymous orders
+        !isSignedIn() && 
+        exists(/databases/$(database)/documents/orders/$(orderId)) &&
+        get(/databases/$(database)/documents/orders/$(orderId)).data.get("customerId", "") == "anonymous" &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatLastMessage', 'chatLastMessageAt', 'chatLastSenderRole', 'chatUnreadMerchant', 'chatMessageCount']) &&
+        request.resource.data.get("chatLastSenderRole", "") == 'customer' && 
+        request.resource.data.get("chatLastMessage", "") is string && 
+        request.resource.data.get("chatLastMessage", "").size() >= 1 && 
+        request.resource.data.get("chatLastMessage", "").size() <= 1000 && 
+        request.resource.data.get("chatLastMessageAt", null) == request.time &&
+        request.resource.data.get("chatUnreadMerchant", 0) == resource.data.get("chatUnreadMerchant", 0) + 1 && 
+        request.resource.data.get("chatMessageCount", 0) == resource.data.get("chatMessageCount", 0) + 1
+      ) || (
+        // Guest marking as read
+        !isSignedIn() && 
+        exists(/databases/$(database)/documents/orders/$(orderId)) &&
+        get(/databases/$(database)/documents/orders/$(orderId)).data.get("customerId", "") == "anonymous" &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['chatUnreadCustomer']) &&
+        resource.data.get("chatUnreadCustomer", 0) > 0 && 
+        request.resource.data.get("chatUnreadCustomer", 0) == 0
       );
 
       match /messages/{messageId} {
-        allow read: if isSignedIn() && (
-          isCustomer() && request.auth.uid == get(/databases/$(database)/documents/orders/$(orderId)).data.customerId ||
-          isMerchant() && getUserProfile(request.auth.uid).establishmentId == get(/databases/$(database)/documents/orders/$(orderId)).data.establishmentId ||
-          isAdmin()
+        allow read: if (isSignedIn() && exists(/databases/$(database)/documents/orders/$(orderId)) && (
+          request.auth.uid == get(/databases/$(database)/documents/orders/$(orderId)).data.get("customerId", get(/databases/$(database)/documents/orders/$(orderId)).data.get("userId", "")) ||
+          isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == get(/databases/$(database)/documents/orders/$(orderId)).data.get("establishmentId", "") ||
+          isAdmin(request.auth.uid)
+        )) || (
+          // Allow guest users to read messages for anonymous orders they are tracking
+          exists(/databases/$(database)/documents/orders/$(orderId)) &&
+          get(/databases/$(database)/documents/orders/$(orderId)).data.get("customerId", "") == "anonymous"
         );
-        allow create: if isSignedIn() && (
-           request.resource.data.senderId == request.auth.uid &&
+        allow create: if (isSignedIn() && (
+           request.resource.data.get("senderId", "") == request.auth.uid &&
            (
-             (isCustomer() && request.resource.data.senderRole == 'customer') ||
-             (isMerchant() && request.resource.data.senderRole == 'merchant')
+             (isCustomer(request.auth.uid) && request.resource.data.get("senderRole", "") == 'customer') ||
+             (isMerchant(request.auth.uid) && request.resource.data.get("senderRole", "") == 'merchant')
            )
+        )) || (
+           // Allow guest users to create messages for anonymous orders
+           !isSignedIn() &&
+           exists(/databases/$(database)/documents/orders/$(orderId)) &&
+           get(/databases/$(database)/documents/orders/$(orderId)).data.get("customerId", "") == "anonymous" &&
+           request.resource.data.get("senderId", "") == "anonymous" &&
+           request.resource.data.get("senderRole", "") == "customer"
         );
         allow update, delete: if false;
       }
+    }
+
+    match /users/{userId}/notifications/{notificationId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin(request.auth.uid));
+      allow create: if isSignedIn() && 
+        request.resource.data.get("type", "") in ["order_status", "new_message"] &&
+        request.resource.data.get("recipientRole", "") == "customer" &&
+        request.resource.data.get("recipientUserId", "") == userId &&
+        request.resource.data.get("isRead", false) == false &&
+        request.resource.data.get("readAt", null) == null &&
+        request.resource.data.orderId is string &&
+        request.resource.data.orderId.size() > 0 &&
+        exists(/databases/$(database)/documents/orders/$(request.resource.data.orderId)) &&
+        (get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.get("customerId", "") == userId ||
+         get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.get("userId", "") == userId);
+
+      allow update: if isSignedIn() && request.auth.uid == userId && 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']) &&
+        request.resource.data.get("isRead", false) == true &&
+        request.resource.data.get("readAt", null) == request.time;
+    }
+
+    match /establishments/{establishmentId}/notifications/{notificationId} {
+      allow read: if (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == establishmentId) || isAdmin(request.auth.uid);
+      allow create: if
+        request.resource.data.get("type", "") in ["new_order", "new_message"] &&
+        request.resource.data.get("recipientRole", "") == "merchant" &&
+        request.resource.data.get("recipientEstablishmentId", "") == establishmentId &&
+        request.resource.data.get("isRead", false) == false &&
+        request.resource.data.get("readAt", null) == null &&
+        request.resource.data.orderId is string &&
+        request.resource.data.orderId.size() > 0 &&
+        exists(/databases/$(database)/documents/orders/$(request.resource.data.orderId)) &&
+        get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.get("establishmentId", "") == establishmentId;
+
+      allow update: if isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == establishmentId &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead', 'readAt']) &&
+        request.resource.data.get("isRead", false) == true &&
+        request.resource.data.get("readAt", null) == request.time;
+    }
+
+    // --- Loyalty System Rules ---
+
+    match /loyaltyConfig/{configId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    match /loyaltyRewards/{rewardId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    match /loyaltyRedemptions/{redemptionId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isAdmin(request.auth.uid));
+      allow write: if isSignedIn();
+    }
+
+    match /loyaltyTransactions/{transactionId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isAdmin(request.auth.uid));
+      allow write: if isSignedIn();
+    }
+
+    match /loyaltyAccounts/{customerId} {
+      allow read: if isSignedIn() && (request.auth.uid == customerId || isAdmin(request.auth.uid));
+      allow write: if isSignedIn();
+    }
+
+    match /adminAudits/{auditId} {
+      allow read, write: if isAdmin(request.auth.uid);
     }
 
     match /{document=**} {
