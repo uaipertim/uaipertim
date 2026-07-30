@@ -171,14 +171,14 @@ export const catalogValidationService = {
       });
       if (!customsPass) report.isValid = false;
 
-      // Test 10: Pizzaria da Praça com cardápio preservado
+      // Test 10: Pizzaria da Praça com catálogo preservado
       const pizzaDaPracaProds = firestoreProds.filter(p => p.establishmentId === 'pizzaria-da-praca');
       const expectedDaPracaCount = INITIAL_PRODUCTS['pizzaria-da-praca']?.length || 0;
       const pizzaPracaPass = pizzaDaPracaProds.length === expectedDaPracaCount;
       report.tests.push({
-        name: 'Preservação de Cardápio da Pizzaria da Praça',
+        name: 'Preservação de Catálogo da Pizzaria da Praça',
         status: pizzaPracaPass ? 'pass' : 'fail',
-        message: pizzaPracaPass ? 'Cardápio e opcionais da Pizzaria da Praça preservados integralmente' : 'Divergência ou perda de pratos da Pizzaria da Praça.',
+        message: pizzaPracaPass ? 'Catálogo e opcionais da Pizzaria da Praça preservados integralmente' : 'Divergência ou perda de pratos da Pizzaria da Praça.',
         expected: `${expectedDaPracaCount} produtos`,
         actual: `${pizzaDaPracaProds.length} produtos no Firestore`,
       });

@@ -141,9 +141,11 @@ service cloud.firestore {
         // Operational updates
         (isAdmin(request.auth.uid) ||
          (isMerchant(request.auth.uid) && getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.get("establishmentId", "") &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'orderStatus', 'statusHistory', 'paymentStatus', 'updatedAt', 'loyaltyPointsGranted'])) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'orderStatus', 'statusHistory', 'paymentStatus', 'updatedAt', 'loyaltyPointsGranted', 'hasUnreadCustomerUpdate'])) ||
          (isCustomer(request.auth.uid) && request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reviewId', 'reviewSubmitted', 'reviewSubmittedAt']) || 
+           (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) && resource.data.status == 'aguardando_confirmacao' && request.resource.data.status == 'cancelado') ||
+           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerLastSeenStatus', 'customerLastViewedAt', 'hasUnreadCustomerUpdate', 'updatedAt'])))
         ) ||
         // Customer sending chat metadatas
         (isCustomer(request.auth.uid) && request.auth.uid == resource.data.get("customerId", resource.data.get("userId", "")) &&
@@ -292,8 +294,38 @@ service cloud.firestore {
     }
 
     match /loyaltyAccounts/{customerId} {
-      allow read: if isSignedIn() && (request.auth.uid == customerId || isAdmin(request.auth.uid));
+      allow read: if isSignedIn() && (request.auth.uid == customerId || isMerchant(request.auth.uid) || isAdmin(request.auth.uid));
       allow write: if isSignedIn();
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isSignedIn() && 
+        request.resource.data.customerUid == request.auth.uid &&
+        request.resource.data.orderId == reviewId &&
+        exists(/databases/$(database)/documents/orders/$(reviewId)) &&
+        get(/databases/$(database)/documents/orders/$(reviewId)).data.status == "concluido" &&
+        get(/databases/$(database)/documents/orders/$(reviewId)).data.customerId == request.auth.uid &&
+        get(/databases/$(database)/documents/orders/$(reviewId)).data.establishmentId == request.resource.data.establishmentId &&
+        request.resource.data.overallRating >= 1 &&
+        request.resource.data.overallRating <= 5 &&
+        request.resource.data.createdAt == request.time &&
+        (request.resource.data.status == 'published' || request.resource.data.status == 'under_review' || request.resource.data.status == 'pending');
+      allow update: if isSignedIn() && (
+        (resource.data.customerUid == request.auth.uid && 
+         request.resource.data.customerUid == request.auth.uid &&
+         resource.data.createdAt is timestamp &&
+         request.time < resource.data.createdAt + duration.value(24, 'h') &&
+         request.resource.data.orderId == resource.data.orderId &&
+         request.resource.data.establishmentId == resource.data.establishmentId &&
+         request.resource.data.customerUid == resource.data.customerUid &&
+         request.resource.data.get("merchantReply", null) == resource.data.get("merchantReply", null)) ||
+        (isMerchant(request.auth.uid) && 
+         getUserProfile(request.auth.uid).get("establishmentId", "") == resource.data.establishmentId &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['merchantReply', 'updatedAt'])) ||
+        isAdmin(request.auth.uid)
+      );
+      allow delete: if isAdmin(request.auth.uid);
     }
 
     match /adminAudits/{auditId} {

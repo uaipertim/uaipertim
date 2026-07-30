@@ -37,6 +37,10 @@ import { getAuth as getClientAuth, signInWithEmailAndPassword } from "firebase/a
 import { FIREBASE_CONFIG, FIRESTORE_DATABASE_ID, PUBLIC_APP_URL } from "./src/config/environment";
 import { isSmtpConfigured, sendTransactionalEmail } from "./src/services/emailService";
 import { getResetPasswordHtml, getResetPasswordText } from "./src/services/emailTemplate";
+import { normalizeProductFromFirestore } from "./src/services/productNormalizer";
+import { calculateConfiguredOrderItem, calculateCartTotals } from "./src/utils/orderCalculation";
+import { calculateEstimatedTotalMinutes } from "./src/utils/establishmentUtils";
+import { mapEstablishmentCategoryToSegment, SEGMENT_TEMPLATES, PLACEHOLDER_IMAGES } from "./src/services/catalogGeneratorService";
 
 // Initialize Firebase Admin SDK for the specific project (ONLY for Auth / ID token verification)
 const firebaseApp = getApps().length === 0 ? initializeApp({
@@ -241,7 +245,7 @@ const auth: any = {
     }
   },
 
-  // 3. getUserByEmail - query Firestore users collection
+  // 3. getUserByEmail - query Firestore users collection, fallback to Firebase Auth REST API lookup
   getUserByEmail: async (email: string) => {
     try {
       const normalizedEmail = email.trim().toLowerCase();
@@ -250,19 +254,43 @@ const auth: any = {
         .limit(1)
         .get();
       
-      if (snapshot.empty) {
-        throw { code: "auth/user-not-found", message: "User not found" };
+      if (!snapshot.empty) {
+        const doc = snapshot.docs[0];
+        const data = doc.data();
+        return {
+          uid: doc.id,
+          email: data.email || normalizedEmail,
+          displayName: data.name || "",
+          phoneNumber: data.phone || "",
+          disabled: data.active === false
+        };
+      }
+
+      // Fallback to Firebase Auth REST API lookup
+      const apiKey = FIREBASE_CONFIG.apiKey;
+      const lookupUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
+      const lookupResponse = await fetch(lookupUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: [normalizedEmail] })
+      });
+
+      if (lookupResponse.ok) {
+        const lookupBody: any = await lookupResponse.json();
+        if (lookupBody?.users && lookupBody.users.length > 0) {
+          const authUser = lookupBody.users[0];
+          return {
+            uid: authUser.localId,
+            email: authUser.email || normalizedEmail,
+            displayName: authUser.displayName || "",
+            phoneNumber: authUser.phoneNumber || "",
+            disabled: authUser.disabled || false,
+            isAuthOnly: true
+          };
+        }
       }
       
-      const doc = snapshot.docs[0];
-      const data = doc.data();
-      return {
-        uid: doc.id,
-        email: data.email || normalizedEmail,
-        displayName: data.name || "",
-        phoneNumber: data.phone || "",
-        disabled: data.active === false
-      };
+      throw { code: "auth/user-not-found", message: "User not found" };
     } catch (err: any) {
       if (err.code === "auth/user-not-found") throw err;
       throw { code: "auth/internal-error", message: err.message };
@@ -706,7 +734,11 @@ const getTierStr = (lifetimePoints: number): string => {
 const authenticateUser = async (req: any, res: any, next: any) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ error: "Token de autenticação não fornecido.", code: "AUTH_TOKEN_MISSING" });
+    return res.status(401).json({
+      success: false,
+      code: "UNAUTHORIZED",
+      message: "Sessão inválida ou expirada."
+    });
   }
   const token = authHeader.split("Bearer ")[1];
   try {
@@ -715,7 +747,11 @@ const authenticateUser = async (req: any, res: any, next: any) => {
     next();
   } catch (error: any) {
     console.error("Error verifying Firebase ID token:", error);
-    return res.status(401).json({ error: "Token de autenticação inválido ou expirado.", code: "AUTH_TOKEN_INVALID" });
+    return res.status(401).json({
+      success: false,
+      code: "UNAUTHORIZED",
+      message: "Sessão inválida ou expirada."
+    });
   }
 };
 
@@ -1924,20 +1960,72 @@ app.post("/api/admin/establishments/:establishmentId/unlink-owner", authenticate
     
     const ownerUid = estData.ownerUid || estData.merchantUid || estData.merchantOwnerUid;
     
-    if (ownerUid) {
-      const userRef = db.collection("users").doc(ownerUid);
-      const userDoc = await userRef.get();
-      if (userDoc.exists) {
-        await userRef.update({
-          establishmentId: null,
-          role: "customer",
-          updatedAt: FieldValue.serverTimestamp()
-        });
-      }
+    if (!ownerUid) {
+      return res.status(400).json({ error: "O estabelecimento já está sem proprietário vinculado.", code: "OWNER_ALREADY_UNLINKED" });
     }
     
-    // Update establishment to remove owner details
-    await estRef.update({
+    const batch = db.batch();
+    
+    const userRef = db.collection("users").doc(ownerUid);
+    const userDoc = await userRef.get();
+    
+    if (userDoc.exists) {
+      const userData = userDoc.data() || {};
+      let newRole = userData.role || "customer";
+      
+      if (newRole !== "admin") {
+        // Check if there are other establishments linked to this user
+        const otherEstsSnapshot1 = await db.collection("establishments")
+          .where("ownerUid", "==", ownerUid)
+          .get();
+        
+        const otherEstsSnapshot2 = await db.collection("establishments")
+          .where("merchantUid", "==", ownerUid)
+          .get();
+        
+        const otherEstsSnapshot3 = await db.collection("establishments")
+          .where("merchantOwnerUid", "==", ownerUid)
+          .get();
+        
+        const activeOtherEsts = [
+          ...otherEstsSnapshot1.docs,
+          ...otherEstsSnapshot2.docs,
+          ...otherEstsSnapshot3.docs
+        ].filter(doc => doc.id !== establishmentId);
+        
+        if (activeOtherEsts.length > 0) {
+          newRole = "merchant";
+        } else {
+          newRole = "customer";
+        }
+      }
+      
+      // Remove establishmentId reference cleanly
+      const userUpdates: any = {
+        role: newRole,
+        updatedAt: FieldValue.serverTimestamp()
+      };
+      
+      if (userData.establishmentId === establishmentId) {
+        userUpdates.establishmentId = null;
+      }
+      
+      // Support list-based structures if present
+      if (Array.isArray(userData.establishmentIds)) {
+        userUpdates.establishmentIds = userData.establishmentIds.filter((id: string) => id !== establishmentId);
+      }
+      if (Array.isArray(userData.linkedEstablishments)) {
+        userUpdates.linkedEstablishments = userData.linkedEstablishments.filter((id: string) => id !== establishmentId);
+      }
+      if (Array.isArray(userData.ownerOf)) {
+        userUpdates.ownerOf = userData.ownerOf.filter((id: string) => id !== establishmentId);
+      }
+      
+      batch.update(userRef, userUpdates);
+    }
+    
+    // Update establishment to remove owner details using null as specified
+    batch.update(estRef, {
       ownerUid: null,
       merchantUid: null,
       merchantOwnerUid: null,
@@ -1949,14 +2037,17 @@ app.post("/api/admin/establishments/:establishmentId/unlink-owner", authenticate
       updatedAt: FieldValue.serverTimestamp()
     });
     
-    // Log action
-    await db.collection("adminAudits").doc().set({
+    // Log action to adminAudits
+    const auditRef = db.collection("adminAudits").doc();
+    batch.set(auditRef, {
       action: "owner_unlinked",
       establishmentId,
-      uid: ownerUid || null,
+      uid: ownerUid,
       adminUid: req.user.uid,
       timestamp: FieldValue.serverTimestamp()
     });
+    
+    await batch.commit();
     
     return res.status(200).json({
       success: true,
@@ -1964,7 +2055,22 @@ app.post("/api/admin/establishments/:establishmentId/unlink-owner", authenticate
     });
   } catch (error: any) {
     console.error("Error in unlink-owner:", error);
-    return res.status(500).json({ error: error.message || "Failed to unlink owner" });
+    try {
+      // Secure technical failure log
+      await db.collection("adminErrorLogs").doc().set({
+        event: "OWNER_UNLINK_FAILED",
+        establishmentId: req.params.establishmentId || null,
+        ownerUid: null,
+        adminUid: req.user?.uid || null,
+        operation: "unlink-owner",
+        errorCode: error.code || "UNKNOWN",
+        message: error.message || String(error),
+        timestamp: FieldValue.serverTimestamp()
+      });
+    } catch (logErr) {
+      console.error("Failed to write to adminErrorLogs:", logErr);
+    }
+    return res.status(500).json({ error: "Não foi possível desvincular o proprietário. Nenhuma alteração foi realizada." });
   }
 });
 
@@ -2067,54 +2173,43 @@ app.post("/api/admin/establishments/:establishmentId/create-owner-access", authe
       }
     }
 
+    let uid: string;
+    let existingUserData: any = null;
+
     if (existingAuthUser) {
+      uid = existingAuthUser.uid;
       // Check Firestore user profile
-      const userDoc = await db.collection("users").doc(existingAuthUser.uid).get();
+      const userDoc = await db.collection("users").doc(uid).get();
       if (userDoc.exists) {
-        const userData = userDoc.data();
-        if (userData?.establishmentId === establishmentId) {
-          return res.status(400).json({ error: "Este usuário já está vinculado a esta loja.", code: "AUTH_EMAIL_ALREADY_EXISTS" });
-        }
-        if (userData?.establishmentId) {
+        existingUserData = userDoc.data();
+        if (existingUserData?.establishmentId && existingUserData?.establishmentId !== establishmentId) {
           return res.status(400).json({ error: "Este e-mail pertence a um usuário já vinculado a outra loja.", code: "USER_ALREADY_LINKED_TO_ANOTHER_STORE" });
         }
-        if (userData?.role === "customer") {
-          return res.status(400).json({ 
-            error: "Este e-mail já pertence a uma conta de cliente. Por favor, utilize a aba 'Vincular Usuário Existente' para conceder acesso ou utilize outro e-mail comercial.", 
-            code: "EXISTING_CUSTOMER_ACCOUNT" 
-          });
-        }
-        return res.status(400).json({ error: "Este e-mail já possui cadastro.", code: "AUTH_EMAIL_ALREADY_EXISTS" });
-      } else {
-        return res.status(400).json({ 
-          error: "O usuário já existe na autenticação, mas não possui um perfil no banco de dados.", 
-          code: "AUTH_USER_WITHOUT_PROFILE" 
+      }
+      console.log(`Reusing and repairing existing user access for email: ${normalizedEmail}, uid: ${uid}`);
+    } else {
+      // Create user in Firebase Authentication using Admin SDK
+      try {
+        createdAuthUser = await auth.createUser({
+          email: normalizedEmail,
+          password: password,
+          displayName: name.trim(),
+          emailVerified: true, // We verify email directly since the admin is creating it
+          disabled: false
         });
+        uid = createdAuthUser.uid;
+        shouldRollback = true;
+      } catch (createErr: any) {
+        console.error("Error creating auth user:", createErr);
+        return res.status(500).json({ error: "Falha ao criar o usuário de autenticação no Firebase.", code: "AUTH_USER_CREATE_FAILED" });
       }
     }
-
-    // Create user in Firebase Authentication using Admin SDK
-    try {
-      createdAuthUser = await auth.createUser({
-        email: normalizedEmail,
-        password: password,
-        displayName: name.trim(),
-        emailVerified: true, // We verify email directly since the admin is creating it
-        disabled: false
-      });
-      shouldRollback = true;
-    } catch (createErr: any) {
-      console.error("Error creating auth user:", createErr);
-      return res.status(500).json({ error: "Falha ao criar o usuário de autenticação no Firebase.", code: "AUTH_USER_CREATE_FAILED" });
-    }
-
-    const uid = createdAuthUser.uid;
 
     // Build atomic write batch
     const batch = db.batch();
 
     // Revoke previous owner's linkage in same batch if replacement is done
-    if (prevOwnerUid) {
+    if (prevOwnerUid && prevOwnerUid !== uid) {
       const prevUserRef = db.collection("users").doc(prevOwnerUid);
       batch.update(prevUserRef, {
         establishmentId: null,
@@ -2135,9 +2230,9 @@ app.post("/api/admin/establishments/:establishmentId/create-owner-access", authe
       accountStatus: "active",
       active: true,
       mustChangePassword: false,
-      createdAt: FieldValue.serverTimestamp(),
+      createdAt: existingUserData?.createdAt || FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-      createdBy: req.user.uid
+      createdBy: existingUserData?.createdBy || req.user.uid
     };
 
     const updatedEstData = {
@@ -2239,16 +2334,28 @@ app.post("/api/admin/establishments/:establishmentId/create-owner-access", authe
 });
 
 const VALID_PUBLIC_CATEGORY_IDS = [
-  "pizzas",
+  "pizzarias",
   "lanches",
   "japonesa",
-  "brasileira",
+  "mineira",
   "acai_doces",
   "mercados",
   "conveniencias",
   "pet_shops",
   "farmacias",
-  "agropecuarias"
+  "agropecuarias",
+  "padarias",
+  "restaurantes",
+  "hamburgueres",
+  "confeitarias",
+  "mercearias",
+  "hortifrutis",
+  "acougues",
+  "bebidas",
+  "papelarias",
+  "floriculturas",
+  "materiais_construcao",
+  "utilidades_domesticas"
 ];
 
 function normalizeCategoryId(value: string): string | null {
@@ -2263,11 +2370,14 @@ function normalizeCategoryId(value: string): string | null {
   if (["japonesa", "japones", "japanese", "sushi"].includes(clean)) {
     return "japonesa";
   }
-  if (["brasileira", "brasileiro", "comida brasileira"].includes(clean)) {
-    return "brasileira";
+  if (["brasileira", "brasileiro", "comida brasileira", "comida_brasileira", "culinaria_brasileira", "mineira", "mineiro", "comida mineira", "comida_mineira", "culinaria mineira", "culinaria_mineira"].includes(clean)) {
+    return "mineira";
   }
-  if (["pizzaria", "pizza", "pizzas", "pizzerias"].includes(clean)) {
-    return "pizzas";
+  if (["padaria", "padarias", "bakery", "bakeries"].includes(clean)) {
+    return "padarias";
+  }
+  if (["pizzaria", "pizza", "pizzas", "pizzerias", "pizzarias"].includes(clean)) {
+    return "pizzarias";
   }
   if (["lanches", "burgers", "burger", "hamburgueres", "hamburguer", "snacks"].includes(clean)) {
     return "lanches";
@@ -2427,7 +2537,8 @@ app.post("/api/admin/establishments/:id/update", authenticateUser, requireAdmin,
       'deliveryFee', 'minOrderValue', 'entregaPropria', 'atendeRetirada', 'bairrosAtendidos',
       'merchantOwnerUid', 'ownerUid', 'merchantUid',
       'logoUrl', 'coverImageUrl', 'isFeaturedPartner', 'featured', 'featuredOrder',
-      'categoryIds'
+      'categoryIds', 'primaryCategory',
+      'aboutDescription', 'description', 'acceptsDelivery', 'acceptsPickup', 'acceptedPaymentMethods'
     ];
     
     const updateData: any = { updatedAt: FieldValue.serverTimestamp() };
@@ -2447,6 +2558,10 @@ app.post("/api/admin/establishments/:id/update", authenticateUser, requireAdmin,
             .filter((id): id is string => id !== null && VALID_PUBLIC_CATEGORY_IDS.includes(id))
         )
       );
+    }
+
+    if (updateData.primaryCategory !== undefined && typeof updateData.primaryCategory === 'string') {
+      updateData.primaryCategory = normalizeCategoryId(updateData.primaryCategory) || updateData.primaryCategory;
     }
 
     // Explicitly set logoUrl in updates if defined
@@ -2506,7 +2621,7 @@ app.post("/api/admin/establishments/:id/update", authenticateUser, requireAdmin,
       }
     }
     
-    return res.status(200).json({ success: true, data: updatedEstData, message: "Estabelecimento atualizado com sucesso." });
+    return res.status(200).json({ success: true, data: updatedEstData, establishment: updatedEstData, message: "Estabelecimento atualizado com sucesso." });
   } catch (error: any) {
     console.error("Error updating establishment:", error);
     return res.status(500).json({ error: error.message || "Failed to update establishment" });
@@ -2625,6 +2740,292 @@ app.post("/api/admin/establishments/:id/status", authenticateUser, requireAdmin,
   } catch (error: any) {
     console.error("Error updating establishment status:", error);
     return res.status(500).json({ error: error.message || "Failed to update establishment status" });
+  }
+});
+
+function slugify(text: string): string {
+  return text
+    .toString()
+    .toLowerCase()
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Remove accents
+    .replace(/\s+/g, "-") // Replace spaces with -
+    .replace(/[^\w\-]+/g, "") // Remove all non-word chars
+    .replace(/\-\-+/g, "-"); // Replace multiple - with single -
+}
+
+// 5.1. Generate Demo Catalog Administrative Endpoint
+app.post("/api/admin/catalog-generator/generate", authenticateUser, requireAdmin, async (req: any, res: any) => {
+  try {
+    const dbId = DATABASE_ID || FIRESTORE_DATABASE_ID;
+    if (!dbId || dbId !== "ai-studio-uaipertim-1ec226bc-5361-4d8f-93aa-92f62786acfe") {
+      return res.status(500).json({
+        success: false,
+        message: "Operação interrompida: Database ID não pôde ser confirmado ou é inválido para esta operação."
+      });
+    }
+
+    const { establishmentIds, operation, expectedTemplate, expectedSegment } = req.body;
+
+    if (!Array.isArray(establishmentIds) || establishmentIds.length !== 1) {
+      return res.status(400).json({
+        success: false,
+        code: "SINGLE_ESTABLISHMENT_REQUIRED",
+        message: "Durante a homologação, selecione apenas um estabelecimento por geração."
+      });
+    }
+
+    if (operation !== "generate-demo-catalog") {
+      return res.status(400).json({ success: false, message: "Operação não suportada ou inválida." });
+    }
+
+    const establishmentId = establishmentIds[0];
+
+    // 1. Load establishment from Firestore
+    const estRef = db.collection("establishments").doc(establishmentId);
+    const estDoc = await estRef.get();
+    if (!estDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        code: "ESTABLISHMENT_NOT_FOUND",
+        message: "Estabelecimento não encontrado."
+      });
+    }
+    const est = { id: estDoc.id, ...estDoc.data() } as any;
+
+    // 2. Resolve segment again
+    const resolvedSegment = mapEstablishmentCategoryToSegment(est);
+    if (resolvedSegment === "revisao_necessaria") {
+      return res.status(400).json({
+        success: false,
+        code: "CATEGORY_REVIEW_REQUIRED",
+        message: "Defina ou revise a categoria do estabelecimento antes de gerar o catálogo."
+      });
+    }
+
+    if (resolvedSegment !== expectedSegment) {
+      return res.status(409).json({
+        success: false,
+        message: `Prévia incompatível: segmento resolvido (${resolvedSegment}) difere do esperado (${expectedSegment}).`
+      });
+    }
+
+    // 3. Mount templates
+    const templates = SEGMENT_TEMPLATES[resolvedSegment];
+    if (!templates || templates.length === 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Nenhum template oficial disponível para o segmento "${resolvedSegment}".`
+      });
+    }
+
+    // 4. Check existing products in root collection
+    const prodsSnap = await db.collection("products").where("establishmentId", "==", establishmentId).get();
+    let realProductsCount = 0;
+    let demoProductsCount = 0;
+    const existingDemoProductsMap = new Map<string, any>();
+
+    prodsSnap.forEach(doc => {
+      const p = doc.data();
+      const isDemo = p.isDemo === true && p.demoSource === "automatic-catalog-generator";
+      if (isDemo) {
+        demoProductsCount++;
+        existingDemoProductsMap.set(doc.id, p);
+      } else {
+        realProductsCount++;
+      }
+    });
+
+    // Check for demo products first
+    if (demoProductsCount > 0) {
+      return res.status(409).json({
+        success: false,
+        code: "DEMO_CATALOG_EXISTS",
+        message: "Este estabelecimento já possui um catálogo demonstrativo."
+      });
+    }
+
+    // Check for real products - if they exist, abort!
+    if (realProductsCount > 0) {
+      return res.status(409).json({
+        success: false,
+        code: "REAL_CATALOG_EXISTS",
+        message: "Este estabelecimento já possui produtos reais cadastrados."
+      });
+    }
+
+    // 5. Check existing categories
+    const catSnap = await db.collection("establishments").doc(establishmentId).collection("menuCategories").get();
+    const existingDemoCategoriesMap = new Map<string, any>();
+    catSnap.forEach(doc => {
+      const data = doc.data();
+      if (data.demoSource === "automatic-catalog-generator") {
+        existingDemoCategoriesMap.set(doc.id, data);
+      }
+    });
+
+    // 6. Calculate skipped / to be created
+    const uniqueCategoryNames = Array.from(new Set(templates.map((t: any) => t.categoryName)));
+    const categoriesToCreate: any[] = [];
+    const productsToCreate: any[] = [];
+    let categoriesSkipped = 0;
+    let productsSkipped = 0;
+
+    // Prepare Categories with deterministic IDs
+    for (let idx = 0; idx < uniqueCategoryNames.length; idx++) {
+      const catName = uniqueCategoryNames[idx];
+      const catSlug = slugify(catName);
+      const catId = `demo_${establishmentId}_${catSlug}`;
+
+      if (existingDemoCategoriesMap.has(catId)) {
+        categoriesSkipped++;
+      } else {
+        const menuCat = {
+          id: catId,
+          establishmentId,
+          name: catName,
+          normalizedName: catName.toLowerCase().trim(),
+          active: true,
+          sortOrder: idx + 1,
+          isDemo: true,
+          demoSource: "automatic-catalog-generator",
+          demoVersion: 1,
+          createdForPresentation: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        categoriesToCreate.push({ id: catId, data: menuCat });
+      }
+    }
+
+    // Prepare Products with deterministic IDs
+    for (let pIdx = 0; pIdx < templates.length; pIdx++) {
+      const temp = templates[pIdx];
+      const prodSlug = slugify(temp.name);
+      const prodId = `demo_${establishmentId}_${prodSlug}`;
+
+      if (existingDemoProductsMap.has(prodId)) {
+        productsSkipped++;
+      } else {
+        const catSlug = slugify(temp.categoryName);
+        const catId = `demo_${establishmentId}_${catSlug}`;
+        
+        const segmentImages = PLACEHOLDER_IMAGES[resolvedSegment] || [
+          "https://images.unsplash.com/photo-1470304780262-fa461dbe0574?w=500&auto=format&fit=crop&q=80"
+        ];
+        const image = segmentImages[pIdx % segmentImages.length];
+
+        const product = {
+          id: prodId,
+          name: temp.name,
+          description: temp.description,
+          price: temp.price,
+          category: temp.categoryName,
+          available: true,
+          image,
+          establishmentId,
+          menuCategoryId: catId,
+          menuCategoryName: temp.categoryName,
+          sizes: temp.sizes || null,
+          borders: temp.borders || null,
+          extras: temp.extras || null,
+          optionGroups: temp.optionGroups || null,
+          preparedToOrder: temp.preparedToOrder ?? false,
+          freshIngredients: temp.freshIngredients ?? false,
+          isDemo: true,
+          demoSource: "automatic-catalog-generator",
+          demoVersion: 1,
+          createdForPresentation: true,
+          active: true,
+          featured: !!temp.isFeatured,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        productsToCreate.push({ id: prodId, data: product });
+      }
+    }
+
+    // If nothing to write, return early
+    if (categoriesToCreate.length === 0 && productsToCreate.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "Operação executada com sucesso. Nenhuma alteração pendente (catálogo demo já existente e intacto).",
+        categoriesCreated: 0,
+        productsCreated: 0,
+        categoriesSkipped,
+        productsSkipped,
+        databaseId: dbId
+      });
+    }
+
+    // 7. Write in batches
+    let opCount = 0;
+    let batch = db.batch();
+    let batchesCommitted = 0;
+
+    try {
+      for (const cat of categoriesToCreate) {
+        const catRef = db.collection("establishments").doc(establishmentId).collection("menuCategories").doc(cat.id);
+        batch.set(catRef, cat.data);
+        opCount++;
+        if (opCount >= 45) {
+          await batch.commit();
+          batchesCommitted++;
+          batch = db.batch();
+          opCount = 0;
+        }
+      }
+
+      for (const prod of productsToCreate) {
+        const prodRef = db.collection("products").doc(prod.id);
+        batch.set(prodRef, prod.data);
+        opCount++;
+        if (opCount >= 45) {
+          await batch.commit();
+          batchesCommitted++;
+          batch = db.batch();
+          opCount = 0;
+        }
+      }
+
+      if (opCount > 0) {
+        await batch.commit();
+        batchesCommitted++;
+      }
+    } catch (writeError: any) {
+      console.error("Erro durante a escrita do lote no Firestore:", writeError);
+      return res.status(500).json({
+        success: false,
+        message: `Falha na gravação do lote no Firestore. Lotes concluídos com sucesso: ${batchesCommitted}. Erro: ${writeError.message || writeError}`
+      });
+    }
+
+    const operationId = `catalog-demo-${Date.now()}`;
+    return res.status(200).json({
+      success: true,
+      operationId,
+      pilotMode: true,
+      establishmentsProcessed: 1,
+      establishmentId,
+      establishmentName: est.name || "Estabelecimento",
+      source: "firestore",
+      databaseId: dbId,
+      segment: resolvedSegment,
+      template: resolvedSegment,
+      categoriesCreated: categoriesToCreate.length,
+      productsCreated: productsToCreate.length,
+      categoriesSkipped,
+      productsSkipped,
+      errors: []
+    });
+
+  } catch (error: any) {
+    console.error("Error generating demo catalog:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Erro interno ao gerar catálogo de demonstração."
+    });
   }
 });
 
@@ -2876,7 +3277,9 @@ function normalizeOrderItemSnapshot(item: any, orderId: string, itemIdx: number)
         item.selectedOptionGroups.forEach((g: any) => {
           if (Array.isArray(g.selectedOptions)) {
             g.selectedOptions.forEach((o: any) => {
-              optionsTotal += typeof o.additionalPrice === 'number' ? o.additionalPrice : 0;
+              const optPrice = typeof o.additionalPrice === 'number' ? o.additionalPrice : 0;
+              const optQty = typeof o.quantity === 'number' ? o.quantity : 1;
+              optionsTotal += optPrice * optQty;
             });
           }
         });
@@ -3802,6 +4205,63 @@ async function getOrCreateDeliveryZones(establishmentId: string, cityId: string)
   return [];
 }
 
+// Helper to recalculate and update delivery summary of an establishment
+async function updateEstablishmentDeliverySummary(establishmentId: string): Promise<any> {
+  try {
+    const estRef = db.collection("establishments").doc(establishmentId);
+    const estDoc = await estRef.get();
+    if (!estDoc.exists) return null;
+
+    const zonesCol = estRef.collection("deliveryZones");
+    const snapshot = await zonesCol.get();
+    const activeZones = snapshot.docs
+      .map(doc => doc.data())
+      .filter((z: any) => z.active === true);
+
+    let status: "free" | "mixed" | "paid" | "unconfigured" = "unconfigured";
+    let minimumFee: number | null = null;
+    const activeZonesCount = activeZones.length;
+    let freeZonesCount = 0;
+
+    if (activeZonesCount > 0) {
+      const fees = activeZones
+        .map((z: any) => z.deliveryFee)
+        .filter((f: any) => typeof f === "number" && !isNaN(f) && f !== null);
+
+      freeZonesCount = activeZones.filter((z: any) => z.deliveryFee === 0).length;
+
+      if (freeZonesCount === activeZonesCount) {
+        status = "free";
+        minimumFee = 0;
+      } else if (freeZonesCount > 0) {
+        status = "mixed";
+        const positiveFees = fees.filter((f: number) => f > 0);
+        minimumFee = positiveFees.length > 0 ? Math.min(...positiveFees) : 0;
+      } else {
+        status = "paid";
+        minimumFee = fees.length > 0 ? Math.min(...fees) : null;
+      }
+    }
+
+    const deliverySummary = {
+      status,
+      minimumFee,
+      activeZonesCount,
+      freeZonesCount,
+      updatedAt: FieldValue.serverTimestamp()
+    };
+
+    await estRef.update({
+      deliverySummary
+    });
+
+    return deliverySummary;
+  } catch (err) {
+    console.error(`Error in updateEstablishmentDeliverySummary for ${establishmentId}:`, err);
+    return null;
+  }
+}
+
 // Helper to format/map Firestore operational errors to the specified FASE 12 codes
 const handleFirestoreOperationError = (error: any, endpoint: string, req: any, establishmentId?: string, firestorePath?: string) => {
   const message = error.message || String(error);
@@ -4136,6 +4596,7 @@ app.post("/api/admin/establishments/:id/delivery-zones", authenticateUser, async
     }
     
     await zoneRef.set(zoneData, { merge: true });
+    await updateEstablishmentDeliverySummary(id);
     
     return res.status(200).json({ success: true, message: "Regra de entrega criada/atualizada com sucesso.", zone: zoneData });
   } catch (error: any) {
@@ -4211,6 +4672,7 @@ app.put("/api/admin/establishments/:id/delivery-zones/:zoneId", authenticateUser
     }
     
     await zoneRef.update(updateData);
+    await updateEstablishmentDeliverySummary(id);
     
     return res.status(200).json({ success: true, message: "Regra de entrega atualizada com sucesso." });
   } catch (error: any) {
@@ -4222,6 +4684,24 @@ app.put("/api/admin/establishments/:id/delivery-zones/:zoneId", authenticateUser
       `/establishments/${id}/deliveryZones/${zoneId}`
     );
     return res.status(statusCode).json(mappedError);
+  }
+});
+
+// POST /api/admin/establishments/recalculate-all-delivery-summaries
+app.post("/api/admin/establishments/recalculate-all-delivery-summaries", authenticateUser, async (req: any, res: any) => {
+  try {
+    if (req.user?.role !== "admin") {
+      return res.status(403).json({ error: "Acesso negado. Apenas administradores podem executar esta ação." });
+    }
+    const establishmentsSnapshot = await db.collection("establishments").get();
+    const results = [];
+    for (const estDoc of establishmentsSnapshot.docs) {
+      const summary = await updateEstablishmentDeliverySummary(estDoc.id);
+      results.push({ id: estDoc.id, name: estDoc.data().name, summary });
+    }
+    return res.status(200).json({ success: true, count: results.length, results });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || String(error) });
   }
 });
 
@@ -4274,6 +4754,7 @@ app.patch("/api/admin/establishments/:id/delivery-zones/:zoneId/status", authent
       updatedAt: FieldValue.serverTimestamp(),
       updatedBy: req.user.uid
     });
+    await updateEstablishmentDeliverySummary(id);
     
     return res.status(200).json({ success: true, message: "Status da regra de entrega atualizado com sucesso." });
   } catch (error: any) {
@@ -4432,7 +4913,7 @@ app.post("/api/delivery/quote", parseOptionalUser, async (req: any, res: any) =>
         additionalMinutes = Number(settings.defaultAdditionalMinutes);
       }
       
-      const estimatedMinutes = Number(est.baseEstimatedMinutes ?? 30) + Number(additionalMinutes);
+      const estimatedMinutes = calculateEstimatedTotalMinutes(est.baseEstimatedMinutes, additionalMinutes) ?? (30 + Number(additionalMinutes));
       
       // Dual-structure output for legacy and wrapped compatibility (FASE 9)
       return res.json({
@@ -4509,7 +4990,7 @@ app.get("/api/delivery/quote/test-rules", parseOptionalUser, async (req: any, re
       additionalMinutes = Number(settings.defaultAdditionalMinutes);
     }
     
-    const estimatedMinutes = Number(est.baseEstimatedMinutes ?? 30) + Number(additionalMinutes);
+    const estimatedMinutes = calculateEstimatedTotalMinutes(est.baseEstimatedMinutes, additionalMinutes) ?? (30 + Number(additionalMinutes));
     
     return res.json({
       success: true,
@@ -4533,6 +5014,288 @@ app.get("/api/delivery/quote/test-rules", parseOptionalUser, async (req: any, re
     return res.status(500).json({ error: error.message || "Failed to calculate delivery quotation test", code: "QUOTE_INTERNAL_ERROR" });
   }
 });
+
+// POST /api/reviews/process
+app.post("/api/reviews/process", authenticateUser, async (req: any, res: any) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_ARGUMENT",
+        message: "O campo orderId é obrigatório."
+      });
+    }
+    const uid = req.user.uid;
+
+    let alreadyProcessed = false;
+
+    await adminDb.runTransaction(async (transaction) => {
+      const reviewRef = adminDb.collection("reviews").doc(orderId);
+      const orderRef = adminDb.collection("orders").doc(orderId);
+
+      const reviewSnap = await transaction.get(reviewRef);
+      const orderSnap = await transaction.get(orderRef);
+
+      if (!reviewSnap.exists) {
+        throw { code: "REVIEW_NOT_FOUND", status: 404, message: "Avaliação não encontrada no Firestore." };
+      }
+      const reviewData = reviewSnap.data() || {};
+
+      if (!orderSnap.exists) {
+        throw { code: "ORDER_NOT_FOUND", status: 404, message: "Pedido não encontrado." };
+      }
+      const orderData = orderSnap.data() || {};
+
+      if (reviewData.customerUid !== uid || orderData.customerId !== uid) {
+        throw { code: "FORBIDDEN", status: 403, message: "Você não tem permissão para processar esta avaliação." };
+      }
+
+      if (orderData.status !== "concluido") {
+        throw { code: "ORDER_NOT_COMPLETED", status: 409, message: "Este pedido ainda não pode ser avaliado." };
+      }
+
+      // If already processed, mark as alreadyProcessed and return early to prevent duplicate aggregates
+      if (reviewData.processed === true || orderData.reviewSubmitted === true) {
+        alreadyProcessed = true;
+        return;
+      }
+
+      const establishmentId = reviewData.establishmentId;
+      if (!establishmentId) {
+        throw { code: "ESTABLISHMENT_NOT_FOUND", status: 400, message: "ID do estabelecimento não encontrado na avaliação." };
+      }
+
+      const estRef = adminDb.collection("establishments").doc(establishmentId);
+      const estSnap = await transaction.get(estRef);
+      if (!estSnap.exists) {
+        throw { code: "ESTABLISHMENT_NOT_FOUND", status: 404, message: "Estabelecimento não encontrado." };
+      }
+      const estData = estSnap.data() || {};
+
+      const now = new Date();
+      const nowIso = now.toISOString();
+
+      transaction.update(reviewRef, {
+        processed: true,
+        processedAt: now,
+        lastProcessedRating: reviewData.overallRating,
+        oldStatus: reviewData.status || "published"
+      });
+
+      transaction.update(orderRef, {
+        reviewId: orderId,
+        reviewSubmitted: true,
+        reviewSubmittedAt: nowIso
+      });
+
+      if (reviewData.status === "published") {
+        const ratingCount = typeof estData.ratingCount === 'number' ? estData.ratingCount : 0;
+        const ratingSum = typeof estData.ratingSum === 'number' ? estData.ratingSum : 0;
+
+        const newCount = ratingCount + 1;
+        const newSum = ratingSum + reviewData.overallRating;
+        const newAverage = Number((newSum / newCount).toFixed(2));
+
+        transaction.update(estRef, {
+          ratingCount: newCount,
+          ratingSum: newSum,
+          ratingAverage: newAverage,
+          rating: newAverage
+        });
+      }
+    });
+
+    if (alreadyProcessed) {
+      return res.status(200).json({
+        success: true,
+        code: "ALREADY_PROCESSED",
+        reviewId: orderId
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      reviewId: orderId,
+      processed: true,
+      reviewSubmitted: true
+    });
+  } catch (error: any) {
+    console.error("Error in /api/reviews/process:", error);
+    const status = error.status || 500;
+    const code = error.code || "REVIEW_PROCESSING_FAILED";
+    const message = error.message || "Não foi possível processar a avaliação.";
+    return res.status(status).json({
+      success: false,
+      code,
+      message
+    });
+  }
+});
+
+// POST /api/reviews/process-update
+app.post("/api/reviews/process-update", authenticateUser, async (req: any, res: any) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_ARGUMENT",
+        message: "O campo orderId é obrigatório."
+      });
+    }
+    const uid = req.user.uid;
+
+    await adminDb.runTransaction(async (transaction) => {
+      const reviewRef = adminDb.collection("reviews").doc(orderId);
+      const reviewSnap = await transaction.get(reviewRef);
+
+      if (!reviewSnap.exists) {
+        throw { code: "REVIEW_NOT_FOUND", status: 404, message: "Avaliação não encontrada." };
+      }
+      const reviewData = reviewSnap.data() || {};
+
+      if (reviewData.customerUid !== uid) {
+        throw { code: "FORBIDDEN", status: 403, message: "Você não possui permissão para atualizar esta avaliação." };
+      }
+
+      // Check 24-hour window
+      const createdAt = reviewData.createdAt;
+      let createdTime: number;
+      if (createdAt && typeof createdAt.toDate === "function") {
+        createdTime = createdAt.toDate().getTime();
+      } else if (createdAt) {
+        createdTime = new Date(createdAt).getTime();
+      } else {
+        createdTime = Date.now();
+      }
+
+      const hoursPassed = (Date.now() - createdTime) / (1000 * 60 * 60);
+      if (hoursPassed > 24) {
+        throw { code: "EDIT_WINDOW_EXPIRED", status: 409, message: "A janela de edição de 24 horas expirou para esta avaliação." };
+      }
+
+      const establishmentId = reviewData.establishmentId;
+      if (!establishmentId) {
+        throw { code: "ESTABLISHMENT_NOT_FOUND", status: 400, message: "ID do estabelecimento não encontrado na avaliação." };
+      }
+
+      const estRef = adminDb.collection("establishments").doc(establishmentId);
+      const estSnap = await transaction.get(estRef);
+      if (!estSnap.exists) {
+        throw { code: "ESTABLISHMENT_NOT_FOUND", status: 404, message: "Estabelecimento não encontrado." };
+      }
+      const estData = estSnap.data() || {};
+
+      const oldRating = typeof reviewData.lastProcessedRating === 'number' ? reviewData.lastProcessedRating : 0;
+      const newRating = reviewData.overallRating;
+      const oldStatus = reviewData.oldStatus || "published";
+      const newStatus = reviewData.status || "published";
+
+      transaction.update(reviewRef, {
+        lastProcessedRating: newRating,
+        oldStatus: newStatus
+      });
+
+      let currentCount = typeof estData.ratingCount === 'number' ? estData.ratingCount : 0;
+      let currentSum = typeof estData.ratingSum === 'number' ? estData.ratingSum : 0;
+
+      if (oldStatus === "published" && newStatus === "published") {
+        currentSum = currentSum - oldRating + newRating;
+      } else if (oldStatus === "published" && newStatus !== "published") {
+        currentCount = Math.max(0, currentCount - 1);
+        currentSum = Math.max(0, currentSum - oldRating);
+      } else if (oldStatus !== "published" && newStatus === "published") {
+        currentCount = currentCount + 1;
+        currentSum = currentSum + newRating;
+      }
+
+      const newAverage = currentCount > 0 ? Number((currentSum / currentCount).toFixed(2)) : 0;
+
+      transaction.update(estRef, {
+        ratingCount: currentCount,
+        ratingSum: currentSum,
+        ratingAverage: newAverage,
+        rating: currentCount > 0 ? newAverage : 4.5
+      });
+    });
+
+    return res.status(200).json({
+      success: true,
+      reviewId: orderId,
+      processed: true
+    });
+  } catch (error: any) {
+    console.error("Error in /api/reviews/process-update:", error);
+    const status = error.status || 500;
+    const code = error.code || "REVIEW_PROCESSING_FAILED";
+    const message = error.message || "Não foi possível processar a atualização da avaliação.";
+    return res.status(status).json({
+      success: false,
+      code,
+      message
+    });
+  }
+});
+
+function isPlainObject(value: any): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
+}
+
+function findUndefinedPaths(obj: any, path = ""): string[] {
+  const paths: string[] = [];
+  if (obj === undefined) {
+    paths.push(path || "root");
+    return paths;
+  }
+  if (obj === null || typeof obj !== 'object') {
+    return paths;
+  }
+  if (Array.isArray(obj)) {
+    obj.forEach((item, index) => {
+      paths.push(...findUndefinedPaths(item, `${path}[${index}]`));
+    });
+  } else if (isPlainObject(obj)) {
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      const nextPath = path ? `${path}.${key}` : key;
+      if (val === undefined) {
+        paths.push(nextPath);
+      } else {
+        paths.push(...findUndefinedPaths(val, nextPath));
+      }
+    }
+  }
+  return paths;
+}
+
+function removeUndefinedDeep(obj: any): any {
+  if (obj === undefined) {
+    return undefined;
+  }
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => removeUndefinedDeep(item));
+  }
+  if (isPlainObject(obj)) {
+    const cleaned: any = {};
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (val !== undefined) {
+        const cleanedVal = removeUndefinedDeep(val);
+        if (cleanedVal !== undefined) {
+          cleaned[key] = cleanedVal;
+        }
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+}
 
 // POST /api/orders/create
 app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
@@ -4571,7 +5334,7 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
     }
     
     let deliveryFee = 0;
-    let estimatedMinutes = Number(est.baseEstimatedMinutes ?? 30);
+    let estimatedMinutes = calculateEstimatedTotalMinutes(est.baseEstimatedMinutes, 0) ?? 30;
     let minimumOrderValue = 0;
     let deliveryZoneSnapshot = null;
     let deliveryPricingSnapshot: any = null;
@@ -4673,7 +5436,7 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
         additionalMinutes = Number(settings.defaultAdditionalMinutes);
       }
       
-      estimatedMinutes = Number(est.baseEstimatedMinutes ?? 30) + Number(additionalMinutes);
+      estimatedMinutes = calculateEstimatedTotalMinutes(est.baseEstimatedMinutes, additionalMinutes) ?? (30 + Number(additionalMinutes));
       
       deliveryPricingSnapshot = {
         pricingSource,
@@ -4702,7 +5465,6 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
     const deliveryRuleSource = isDelivery ? (deliveryPricingSnapshot?.pricingSource || "establishment_default") : "merchant_pickup";
 
     // Secure backend recalculation and validation of order items and options
-    let calculatedSubtotal = 0;
     const validatedItems = [];
 
     if (!Array.isArray(orderData.items) || orderData.items.length === 0) {
@@ -4720,101 +5482,34 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
         return res.status(404).json({ error: `Produto ID ${productId} não encontrado.` });
       }
 
-      const product = productDoc.data();
-      if (product.establishmentId !== establishmentId) {
-        return res.status(400).json({ error: `O produto ${product.name} não pertence a este estabelecimento.` });
+      const rawProduct = productDoc.data();
+      if (rawProduct.establishmentId !== establishmentId) {
+        return res.status(400).json({ error: `O produto ${rawProduct.name} não pertence a este estabelecimento.` });
       }
 
-      if (product.available === false) {
-        return res.status(400).json({ error: `O produto ${product.name} não está disponível no momento.` });
+      if (rawProduct.available === false) {
+        return res.status(400).json({ error: `O produto ${rawProduct.name} não está disponível no momento.` });
       }
 
-      const baseUnitPrice = Number(product.price || 0);
+      // Securely normalize the raw product from the database
+      const dbProduct = normalizeProductFromFirestore(rawProduct, productDoc.id);
 
-      // 1. Resolve size price delta
-      let sizeDelta = 0;
-      let sizeObj = null;
-      if (item.selectedSize) {
-        const sizeName = typeof item.selectedSize === 'object' ? item.selectedSize.name : item.selectedSize;
-        const sizeGroup = product.optionGroups?.find((g: any) => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho');
-        const opt = sizeGroup?.options?.find((o: any) => o.name === sizeName);
-        if (opt) {
-          sizeDelta = Number(opt.additionalPrice || 0);
-          sizeObj = { id: opt.id, name: opt.name, priceDelta: sizeDelta };
-        } else {
-          if (sizeName === 'Pequena') sizeDelta = -5.00;
-          else if (sizeName === 'Grande') sizeDelta = 8.00;
-          sizeObj = { id: sizeName.toLowerCase(), name: sizeName, priceDelta: sizeDelta };
-        }
-      }
-
-      // 2. Resolve crust price delta
-      let crustDelta = 0;
-      let crustObj = null;
-      if (item.selectedBorder) {
-        const crustName = typeof item.selectedBorder === 'object' ? item.selectedBorder.name : item.selectedBorder;
-        if (crustName !== 'Sem borda') {
-          const borderGroup = product.optionGroups?.find((g: any) => g.name.toLowerCase().includes('borda') || g.id === 'borda' || g.id === 'escolha-a-borda');
-          const opt = borderGroup?.options?.find((o: any) => o.name === crustName);
-          if (opt) {
-            crustDelta = Number(opt.additionalPrice || 0);
-            crustObj = { id: opt.id, name: opt.name, priceDelta: crustDelta };
-          } else {
-            crustDelta = 5.00;
-            crustObj = { id: crustName.toLowerCase(), name: crustName, priceDelta: crustDelta };
-          }
-        } else {
-          crustObj = { id: 'none', name: 'Sem borda', priceDelta: 0 };
-        }
-      }
-
-      // 3. Resolve selectedExtras price delta
-      const validatedExtras = [];
-      let extrasUnitTotal = 0;
-      if (Array.isArray(item.selectedExtras)) {
-        const premiumGroup = product.optionGroups?.find((g: any) => g.name.toLowerCase().includes('adicionais premium') || g.id === 'adicionais-premium' || g.name.toLowerCase() === 'adicionais');
-        
-        for (const ex of item.selectedExtras) {
-          const opt = premiumGroup?.options?.find((o: any) => o.name === ex.name);
-          const unitPrice = opt ? Number(opt.additionalPrice || 0) : Number(ex.unitPrice || ex.price || 0);
-          const qty = Number(ex.quantity || 1);
-          extrasUnitTotal += unitPrice * qty;
-          validatedExtras.push({
-            id: opt ? opt.id : (ex.id || `extra-${ex.name.toLowerCase()}`),
-            name: ex.name,
-            unitPrice,
-            quantity: qty
-          });
-        }
-      }
-
-      // 4. Resolve selectedOptionGroups price delta
-      const validatedOptionGroups = [];
-      let customGroupsDelta = 0;
-
+      // Perform backend option group validations first to ensure integrity
       if (Array.isArray(item.selectedOptionGroups)) {
         for (const sg of item.selectedOptionGroups) {
-          // Skip size, border, extras groups in custom calculation to avoid double counting
-          const isLegacyGroup = 
-            sg.groupId === 'escolha-o-tamanho' || 
-            sg.groupId === 'escolha-a-borda' || 
-            sg.groupId === 'adicionais-premium' ||
-            sg.groupName.toLowerCase().includes('tamanho') ||
-            sg.groupName.toLowerCase().includes('borda') ||
-            sg.groupName.toLowerCase().includes('adicionais premium') ||
-            sg.groupName.toLowerCase() === 'adicionais';
-
-          if (isLegacyGroup) continue;
-
-          const officialGroup = product.optionGroups?.find((og: any) => og.id === sg.groupId || og.name.toLowerCase() === sg.groupName.toLowerCase());
+          const officialGroup = dbProduct.optionGroups?.find((og: any) => og.id === sg.groupId || og.name.toLowerCase() === sg.groupName.toLowerCase());
           if (!officialGroup) continue;
 
           if (officialGroup.active === false) {
             return res.status(400).json({ error: `O grupo de opções ${officialGroup.name} está desativado.` });
           }
 
-          const optionCountsMap = new Map<string, { optionId: string; name: string; additionalPrice: number; quantity: number }>();
-          
+          const selectCount = Array.isArray(sg.selectedOptions) ? sg.selectedOptions.length : 0;
+          const minSelect = Number(officialGroup.minSelect ?? officialGroup.minSelections ?? 0);
+          const maxSelect = Number(officialGroup.maxSelect ?? officialGroup.maxSelections ?? 0);
+          const allowOptionQuantity = officialGroup.allowOptionQuantity === true;
+          const maxQuantityPerOption = Number(officialGroup.maxQuantityPerOption ?? 5);
+
           if (Array.isArray(sg.selectedOptions)) {
             for (const so of sg.selectedOptions) {
               const officialOption = officialGroup.options?.find((oo: any) => oo.id === so.optionId || oo.name.toLowerCase() === so.name.toLowerCase());
@@ -4825,81 +5520,59 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
                 return res.status(400).json({ error: `A opção ${officialOption.name} está desativada.` });
               }
 
-              const price = Number(officialOption.additionalPrice || 0);
-              const key = officialOption.id;
               const oQty = Number(so.quantity || 1);
-              const existing = optionCountsMap.get(key);
-              if (existing) {
-                existing.quantity += oQty;
-              } else {
-                optionCountsMap.set(key, {
-                  optionId: officialOption.id,
-                  name: officialOption.name,
-                  additionalPrice: price,
-                  quantity: oQty
-                });
+              const maxAllowedQty = allowOptionQuantity ? maxQuantityPerOption : 1;
+              if (oQty > maxAllowedQty) {
+                return res.status(400).json({ error: `A quantidade máxima para a opção ${so.name} é de ${maxAllowedQty} unidades.` });
               }
             }
           }
 
-          const groupSelectedOptions = Array.from(optionCountsMap.values());
-          const groupTotalSelections = groupSelectedOptions.reduce((sum, o) => sum + o.quantity, 0);
-
-          // Validate limits
-          if (officialGroup.required && groupTotalSelections < officialGroup.minSelections) {
-            return res.status(400).json({ error: `Você precisa selecionar no mínimo ${officialGroup.minSelections} opções em ${officialGroup.name}.` });
+          if (officialGroup.required && selectCount < minSelect) {
+            return res.status(400).json({ error: `Você precisa selecionar no mínimo ${minSelect} opções em ${officialGroup.name}.` });
           }
-          if (groupTotalSelections > officialGroup.maxSelections) {
-            return res.status(400).json({ error: `Você selecionou mais opções do que o permitido (${officialGroup.maxSelections}) em ${officialGroup.name}.` });
+          if (maxSelect > 0 && selectCount > maxSelect) {
+            return res.status(400).json({ error: `Você selecionou mais opções do que o permitido (${maxSelect}) em ${officialGroup.name}.` });
           }
-
-          // Build enriched selectedOptions list as requested
-          const enrichedSelectedOptions = groupSelectedOptions.map(o => {
-            const optTotal = o.additionalPrice * o.quantity;
-            customGroupsDelta += optTotal;
-            return {
-              optionId: o.optionId,
-              name: o.name,
-              additionalPrice: o.additionalPrice,
-              unitPrice: o.additionalPrice,
-              quantity: o.quantity,
-              totalPrice: optTotal
-            };
-          });
-
-          validatedOptionGroups.push({
-            groupId: officialGroup.id,
-            groupName: officialGroup.name,
-            selectedOptions: enrichedSelectedOptions
-          });
         }
       }
 
-      const optionsUnitTotal = sizeDelta + crustDelta + extrasUnitTotal + customGroupsDelta;
-      const finalUnitPrice = baseUnitPrice + optionsUnitTotal;
-      const quantity = Number(item.quantity || 1);
-      const lineTotal = finalUnitPrice * quantity;
+      // Extract client's option choices safely
+      const sizeName = item.selectedSize
+        ? (typeof item.selectedSize === 'object' ? item.selectedSize.name : item.selectedSize)
+        : undefined;
 
-      calculatedSubtotal += lineTotal;
+      const borderName = item.selectedCrust
+        ? (typeof item.selectedCrust === 'object' ? item.selectedCrust.name : item.selectedCrust)
+        : (item.selectedBorder
+            ? (typeof item.selectedBorder === 'object' ? item.selectedBorder.name : item.selectedBorder)
+            : undefined);
 
-      validatedItems.push({
-        productId: product.id,
-        productName: product.name,
-        productImage: product.image || null,
-        quantity,
-        baseUnitPrice,
-        selectedSize: sizeObj,
-        selectedCrust: crustObj,
-        selectedExtras: validatedExtras,
-        selectedOptionGroups: validatedOptionGroups,
-        notes: item.notes?.trim() || null,
-        optionsUnitTotal,
-        finalUnitPrice,
-        lineTotal
-      });
+      const extras = Array.isArray(item.selectedExtras) ? item.selectedExtras : [];
+
+      // Recalculate and validate item using canonical logic and database product rules
+      const validatedItem = calculateConfiguredOrderItem(
+        dbProduct,
+        sizeName,
+        borderName,
+        extras,
+        Number(item.quantity || 1),
+        item.notes,
+        item.selectedOptionGroups
+      );
+
+      validatedItems.push(validatedItem);
     }
 
-    const subtotal = calculatedSubtotal;
+    // Now calculate correct totals using canonical calculateCartTotals in cents
+    const cartTotals = calculateCartTotals(
+      validatedItems,
+      deliveryFee,
+      0, // We calculate coupon discount after
+      isDelivery ? 'delivery' : 'pickup'
+    );
+
+    const subtotal = cartTotals.productsSubtotalCents / 100;
     if (subtotal < minimumOrderValue) {
       return res.status(422).json({
         error: `O subtotal do pedido (R$ ${subtotal.toFixed(2)}) é menor que o pedido mínimo exigido (R$ ${minimumOrderValue.toFixed(2)}).`
@@ -4938,6 +5611,8 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
       customerPhone: userProfileData.phone || orderData.customerPhone,
       establishmentId,
       establishmentName: est.name,
+      establishmentImage: est.logoUrl || est.image || "",
+      establishmentCity: est.cityName || est.city || 'São João Batista do Glória',
       cityId: est.cityId || extraData.cityId || 'sao-joao-batista-do-gloria-mg',
       cityName: est.cityName || extraData.cityName || 'São João Batista do Glória',
       state: est.state || extraData.state || 'MG',
@@ -4973,6 +5648,26 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
       updatedAt: FieldValue.serverTimestamp()
     };
 
+    // Sanitize orderPayload recursively using removeUndefinedDeep
+    const sanitizedPayload = removeUndefinedDeep(orderPayload);
+
+    // Find undefined paths for diagnostic logging
+    const undefinedPaths = findUndefinedPaths(orderPayload);
+    if (undefinedPaths.length > 0) {
+      console.warn("[Diagnostic] Undefined fields found and removed from orderPayload:", undefinedPaths);
+    }
+
+    // Validate mandatory fields
+    if (!sanitizedPayload.orderNumber) {
+      return res.status(400).json({ error: "Campo obrigatório ausente: orderNumber (ID do pedido)." });
+    }
+    if (!Array.isArray(sanitizedPayload.items) || sanitizedPayload.items.length === 0) {
+      return res.status(400).json({ error: "Campo obrigatório ausente ou vazio: items (itens do pedido)." });
+    }
+    if (sanitizedPayload.total === undefined || sanitizedPayload.total === null) {
+      return res.status(400).json({ error: "Campo obrigatório ausente: total (valor total do pedido)." });
+    }
+
     // If it's a loyalty coupon, mark it as 'used' atomically inside a transaction!
     try {
       if (cleanCouponCode && cleanCouponCode !== 'PEDENOVO' && cleanCouponCode !== 'UAIPERTIM10') {
@@ -5002,11 +5697,11 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
 
           // Write order payload inside the transaction
           const orderRef = db.collection("orders").doc(orderId);
-          transaction.set(orderRef, orderPayload);
+          transaction.set(orderRef, sanitizedPayload);
         });
       } else {
         // General promo code or no coupon
-        await db.collection("orders").doc(orderId).set(orderPayload);
+        await db.collection("orders").doc(orderId).set(sanitizedPayload);
       }
     } catch (saveErr: any) {
       console.error("Error creating order with coupon:", saveErr);
@@ -5027,7 +5722,7 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
     };
 
     try {
-      const pushRes = await sendNewOrderPushNotification(orderPayload);
+      const pushRes = await sendNewOrderPushNotification(sanitizedPayload);
       
       const maskId = (id: string) => {
         if (!id) return "N/A";
@@ -5057,7 +5752,7 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
       };
 
       // Set the push diagnostic on the order payload and update Firestore
-      (orderPayload as any).pushDiagnostic = pushDiagnosticResult;
+      (sanitizedPayload as any).pushDiagnostic = pushDiagnosticResult;
       await db.collection("orders").doc(orderId).update({
         pushDiagnostic: pushDiagnosticResult
       });
@@ -5067,7 +5762,7 @@ app.post("/api/orders/create", authenticateUser, async (req: any, res: any) => {
     }
 
     return res.status(201).json({
-      ...orderPayload,
+      ...sanitizedPayload,
       id: orderId,
       createdAt: timestamp,
       updatedAt: timestamp

@@ -1,6 +1,10 @@
 import React, { useState } from 'react';
 import { User, MapPin, Lock, Sliders, Clipboard, LogOut, FileText, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useAuth } from '../../hooks/useAuth';
+import { useApp } from '../../context/AppContext';
+import { useLocation } from '../../hooks/useLocation';
+import { enableRoleAreaSwitcher } from '../../config';
 
 export type AccountTab = 'overview' | 'data' | 'addresses' | 'security' | 'preferences' | 'orders';
 
@@ -18,6 +22,76 @@ export const AccountNavigation: React.FC<AccountNavigationProps> = ({
   orderCount
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const { userProfile, loading } = useAuth();
+  const { establishments } = useApp();
+  const [path, navigate] = useLocation();
+
+  // 1. Determine current area based on the path
+  const currentArea = React.useMemo(() => {
+    if (path.startsWith('/gestor') || path.startsWith('/loja/pedidos')) {
+      return 'merchant';
+    } else if (path.startsWith('/admin')) {
+      return 'admin';
+    }
+    return 'customer';
+  }, [path]);
+
+  // 2. Define all authorized areas
+  const allAuthorizedAreas = React.useMemo(() => {
+    const list = [];
+
+    // Every logged in user has access to customer area
+    list.push({
+      id: 'customer' as const,
+      label: 'Área do cliente',
+      desc: 'Acessar minha conta',
+      icon: User,
+      navigatePath: '/minha-conta',
+      ariaLabel: 'Acessar minha conta',
+      isActive: path === '/minha-conta' || path === '/meus-pedidos'
+    });
+
+    // Merchant area - permitted if merchant/admin and they have an establishmentId
+    const hasMerchantAccess = (userProfile?.role === 'merchant' || userProfile?.role === 'admin') && !!userProfile?.establishmentId;
+    if (hasMerchantAccess) {
+      const estName = userProfile?.establishmentId 
+        ? (establishments.find(e => e.id === userProfile.establishmentId)?.name || 'Estabelecimento')
+        : 'Estabelecimento';
+      list.push({
+        id: 'merchant' as const,
+        label: 'Painel do estabelecimento',
+        desc: estName,
+        icon: FileText,
+        navigatePath: '/gestor',
+        ariaLabel: `Acessar painel do ${estName}`,
+        isActive: path === '/gestor' || path === '/loja/pedidos'
+      });
+    }
+
+    // Admin area - permitted if role is admin
+    const hasAdminAccess = userProfile?.role === 'admin';
+    if (hasAdminAccess) {
+      list.push({
+        id: 'admin' as const,
+        label: 'Administração UaiPertim',
+        desc: 'Acessar administração',
+        icon: Lock,
+        navigatePath: '/admin',
+        ariaLabel: 'Acessar administração UaiPertim',
+        isActive: path === '/admin' || path === '/admin/migracao-catalogo'
+      });
+    }
+
+    return list;
+  }, [userProfile, establishments, path]);
+
+  // 3. Filter out current area to get alternative areas
+  const availableAlternativeAreas = React.useMemo(() => {
+    return allAuthorizedAreas.filter(area => area.id !== currentArea);
+  }, [allAuthorizedAreas, currentArea]);
+
+  // 4. Section visibility
+  const shouldShowAreaSwitcher = enableRoleAreaSwitcher && availableAlternativeAreas.length > 0;
 
   const menuItems = [
     { 
@@ -176,6 +250,57 @@ export const AccountNavigation: React.FC<AccountNavigationProps> = ({
                   </button>
                 );
               })}
+
+              {enableRoleAreaSwitcher && (
+                loading ? (
+                  <>
+                    <div className="h-px bg-[#F7F4EF] my-2" />
+                    <div className="px-3.5 py-1.5 animate-pulse">
+                      <div className="h-3 bg-[#EADFD8] rounded w-1/3 mb-2" />
+                      <div className="h-11 bg-[#F7F4EF] rounded-xl w-full" />
+                    </div>
+                  </>
+                ) : shouldShowAreaSwitcher ? (
+                  <>
+                    <div className="h-px bg-[#F7F4EF] my-2" />
+                    <div className="px-3.5 py-1.5">
+                      <h4 className="text-[10px] font-black uppercase tracking-wider text-[#756B66]">Acessar outra área</h4>
+                    </div>
+                    {availableAlternativeAreas.map((area) => {
+                      const AreaIcon = area.icon;
+                      return (
+                        <button
+                          key={area.id}
+                          onClick={() => navigate(area.navigatePath)}
+                          aria-label={area.ariaLabel}
+                          className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl transition-all cursor-pointer text-left min-h-[44px] focus:outline-none focus:ring-2 focus:ring-[#E94F2F]/20 ${
+                            area.isActive
+                              ? 'bg-[#E94F2F]/10 text-[#E94F2F] font-extrabold'
+                              : 'text-[#5C534E] hover:bg-[#F7F4EF] hover:text-[#201A17] font-bold'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={`p-2 rounded-lg shrink-0 ${
+                              area.isActive ? 'bg-[#E94F2F] text-white' : 'bg-[#F7F4EF] text-[#756B66]'
+                            }`}>
+                              <AreaIcon className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <span className={`text-xs block ${area.isActive ? 'text-[#E94F2F]' : 'text-[#201A17]'}`}>
+                                {area.label}
+                              </span>
+                              <span className="text-[10px] font-medium text-[#756B66]/80 block truncate max-w-[150px] md:max-w-[170px]">
+                                {area.desc}
+                              </span>
+                            </div>
+                          </div>
+                          <ChevronRight className="w-3.5 h-3.5 text-[#756B66]/40 shrink-0" />
+                        </button>
+                      );
+                    })}
+                  </>
+                ) : null
+              )}
 
               <div className="h-px bg-[#F7F4EF] my-2" />
 

@@ -167,7 +167,11 @@ export const AppFooter: React.FC<{ showMobileCartBar?: boolean }> = ({ showMobil
   };
 
   return (
-    <footer className={`bg-[#FAF8F5] border-t border-[#EADFD8] pt-8 pb-6 px-6 mt-12 w-full rounded-t-[24px] sm:rounded-t-none shadow-xs relative z-10 ${showMobileCartBar ? 'sm:pb-6 pb-[calc(88px+env(safe-area-inset-bottom))]' : ''}`}>
+    <footer className={`bg-[#FAF8F5] border-t border-[#EADFD8] pt-8 px-6 mt-12 w-full rounded-t-[24px] sm:rounded-t-none shadow-xs relative z-10 ${
+      showMobileCartBar 
+        ? 'sm:pb-6 pb-[calc(88px+env(safe-area-inset-bottom))]' 
+        : 'sm:pb-6 pb-[calc(76px+env(safe-area-inset-bottom,16px))]'
+    }`}>
       <div className="max-w-7xl mx-auto flex flex-col gap-6">
         
         {/* DESKTOP LAYOUT (Horizontal row) */}
@@ -227,9 +231,9 @@ export const AppFooter: React.FC<{ showMobileCartBar?: boolean }> = ({ showMobil
         {/* MOBILE LAYOUT (Compact, vertical under 640px) */}
         <div className="flex sm:hidden flex-col gap-4">
           {/* Row 1: Brand & Scroll to Top */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 shrink-0 overflow-hidden rounded-full flex items-center justify-center">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0 flex-1">
+              <div className="w-10 h-10 shrink-0 overflow-hidden rounded-full flex items-center justify-center bg-white border border-[#EADFD8]/40">
                 <img
                   src="/brand/uaipertim-logo-oficial-v2.png"
                   alt="UaiPertim"
@@ -238,18 +242,18 @@ export const AppFooter: React.FC<{ showMobileCartBar?: boolean }> = ({ showMobil
                   className="w-full h-full object-cover select-none pointer-events-none scale-[1.02]"
                 />
               </div>
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="font-extrabold text-sm text-[#201A17]">UaiPertim</span>
-                  <span className="text-[8px] font-black uppercase tracking-wider text-[#E94F2F] bg-[#E94F2F]/10 px-1.5 py-0.5 rounded-md whitespace-nowrap">Feito em Minas</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-extrabold text-sm text-[#201A17] whitespace-nowrap">UaiPertim</span>
+                  <span className="text-[8px] font-black uppercase tracking-wider text-[#E94F2F] bg-[#E94F2F]/10 px-1.5 py-0.5 rounded-md whitespace-nowrap shrink-0">Feito em Minas</span>
                 </div>
-                <span className="block text-[10px] text-[#756B66] -mt-0.5">Tudo da sua cidade, pertim de você.</span>
+                <span className="block text-[10px] text-[#756B66] mt-0.5 leading-normal">Tudo da sua cidade, pertim de você.</span>
               </div>
             </div>
             
             <button 
               onClick={scrollToTop} 
-              className="flex items-center justify-center p-2 bg-white border border-[#EADFD8] rounded-full text-[#201A17] hover:text-[#E94F2F] cursor-pointer active:scale-95 shadow-2xs"
+              className="flex items-center justify-center p-2 bg-white border border-[#EADFD8] rounded-full text-[#201A17] hover:text-[#E94F2F] cursor-pointer active:scale-95 shadow-2xs shrink-0"
               aria-label="Voltar ao topo"
             >
               <ArrowUp className="w-3.5 h-3.5" />

@@ -1,5 +1,15 @@
 import { EstablishmentSegment, OrderStatus, OperationMode } from '../types';
-import { CATEGORY_LABELS } from '../types';
+import { CATEGORY_LABELS, ESTABLISHMENT_CATEGORIES } from '../types';
+
+export const getEstablishmentCardLabel = (categoryId: string | undefined | null): string => {
+  if (!categoryId) return 'Comércio local';
+  const cleanId = normalizeCategoryId(categoryId);
+  const cat = ESTABLISHMENT_CATEGORIES.find(c => c.id === cleanId);
+  if (cat && cat.establishmentLabel) {
+    return cat.establishmentLabel;
+  }
+  return getCategoryLabel(categoryId);
+};
 
 export const normalizeCategoryId = (cat: string | undefined | null): string => {
   if (!cat) return 'restaurantes';
@@ -51,8 +61,14 @@ export const normalizeCategoryId = (cat: string | undefined | null): string => {
     'japonesa': 'japonesa',
     'comida japonesa': 'japonesa',
     
-    'brasileira': 'brasileira',
-    'comida brasileira': 'brasileira',
+    'brasileira': 'mineira',
+    'comida brasileira': 'mineira',
+    'comida_brasileira': 'mineira',
+    'culinaria_brasileira': 'mineira',
+    'mineira': 'mineira',
+    'comida mineira': 'mineira',
+    'culinaria mineira': 'mineira',
+    'culinaria_mineira': 'mineira',
     
     'markets': 'mercados',
     'market': 'mercados',
@@ -188,7 +204,7 @@ export const getCategoryLabel = (categoryId: string | undefined | null): string 
 
 export const getCatalogLabel = (segment: EstablishmentSegment = 'other'): string => {
   const labels: Record<EstablishmentSegment, string> = {
-    food: 'Cardápio',
+    food: 'Catálogo',
     market: 'Produtos',
     pharmacy: 'Produtos',
     petshop: 'Catálogo',

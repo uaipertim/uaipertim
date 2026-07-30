@@ -59,6 +59,8 @@ interface AppContextType {
   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
   ordersLoading: boolean;
   cart: CartItem[];
+  pendingCartItem: CartItem | null;
+  setPendingCartItem: React.Dispatch<React.SetStateAction<CartItem | null>>;
   addToCart: (item: CartItem) => void;
   updateCartItemQuantity: (index: number, change: number) => void;
   removeFromCart: (index: number) => void;
@@ -73,13 +75,14 @@ interface AppContextType {
   setTickets: React.Dispatch<React.SetStateAction<SupportTicket[]>>;
   feedbacks: Feedback[];
   setFeedbacks: React.Dispatch<React.SetStateAction<Feedback[]>>;
+  allDeliveryZones?: Record<string, any[]>;
   
   // Actions
   placeOrder: (orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName'> & { addressId?: string }) => Promise<Order>;
   updateOrderStatus: (orderId: string, newStatus: OrderStatus) => void;
   updateOrderPaymentStatus: (orderId: string, newPaymentStatus: 'pending' | 'paid' | 'not_paid' | 'cancelled') => void;
   addOrUpdateProduct: (establishmentId: string, product: Product, options?: { silent?: boolean }) => Promise<void>;
-  deleteProduct: (establishmentId: string, productId: string) => void;
+  deleteProduct: (establishmentId: string, productId: string) => Promise<void>;
   addOrUpdateMenuCategory: (establishmentId: string, category: MenuCategory) => Promise<void>;
   deleteMenuCategory: (establishmentId: string, categoryId: string) => Promise<void>;
   resetDemo: () => void;
@@ -328,20 +331,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProductsState((prev) => {
       const next = typeof value === 'function' ? value(prev) : value;
       
-      if (!isDemo && catalogDataSource === 'firestore') {
-        Object.entries(next).forEach(([estId, nextList]) => {
-          const prevList = prev[estId] || [];
-          
-          nextList.forEach((newProd) => {
-            const oldProd = prevList.find((p) => p.id === newProd.id);
-            if (!oldProd || JSON.stringify(oldProd) !== JSON.stringify(newProd)) {
-              productsRepository.saveProduct(estId, newProd).catch((err) => {
-                console.error(`Error saving product ${newProd.id} to Firestore:`, err);
-              });
-            }
-          });
-        });
-      } else {
+      if (isDemo || catalogDataSource !== 'firestore') {
         localStorage.setItem('pl_products', JSON.stringify(next));
       }
       return next;
@@ -351,6 +341,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const products = productsState;
 
   const [menuCategoriesState, setMenuCategoriesState] = useState<Record<string, MenuCategory[]>>({});
+
+  const [allDeliveryZonesState, setAllDeliveryZonesState] = useState<Record<string, any[]>>({});
 
   const setMenuCategories = (
     value: Record<string, MenuCategory[]> | ((prev: Record<string, MenuCategory[]>) => Record<string, MenuCategory[]>)
@@ -559,6 +551,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [isDemo, catalogDataSource]);
 
+  // Delivery Zones Subscription - REMOVED for security and performance optimization.
+  useEffect(() => {
+    // No-op: Removed global collectionGroup listener.
+    setAllDeliveryZonesState({});
+  }, []);
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [ordersLoading, setOrdersLoading] = useState<boolean>(true);
 
@@ -672,6 +670,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return saved ? JSON.parse(saved) : [];
   });
 
+  const [pendingCartItem, setPendingCartItem] = useState<CartItem | null>(null);
+
   const [neighborhoods, setNeighborhoodsState] = useState<DeliveryNeighborhood[]>(() => {
     const saved = localStorage.getItem('pl_neighborhoods');
     return saved ? JSON.parse(saved) : INITIAL_NEIGHBORHOODS;
@@ -765,9 +765,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Actions
   const addToCart = (item: CartItem) => {
-    const est = establishments.find(e => e.id === selectedEstablishmentId) || establishments[0];
+    const productEstId = item.product.establishmentId;
+    const est = establishments.find(e => e.id === productEstId) || establishments.find(e => e.id === selectedEstablishmentId) || establishments[0];
     if (!canEstablishmentReceiveOrders(est)) {
       showToast(`O estabelecimento está fechado e não pode receber novos pedidos neste momento.`, 'error');
+      return;
+    }
+    if (cart.length > 0 && cart[0].product.establishmentId !== productEstId) {
+      setPendingCartItem(item);
       return;
     }
     setCart((prev) => {
@@ -850,7 +855,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const placeOrder = async (orderData: Omit<Order, 'id' | 'createdAt' | 'status' | 'establishmentId' | 'establishmentName' | 'cityId' | 'cityName' | 'state'> & { addressId?: string }): Promise<Order> => {
-    const est = establishments.find(e => e.id === selectedEstablishmentId) || establishments[0];
+    const activeEstId = cart.length > 0 ? cart[0].product.establishmentId : selectedEstablishmentId;
+    const est = establishments.find(e => e.id === activeEstId) || establishments.find(e => e.id === selectedEstablishmentId) || establishments[0];
     if (!canEstablishmentReceiveOrders(est)) {
       throw new Error("O estabelecimento não pode receber pedidos neste momento.");
     }
@@ -901,19 +907,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       showToast(`Pedido ${orderId} atualizado para: ${statusLabels[newStatus]}!`, 'info');
     } catch (e: any) {
-      console.error("Erro ao atualizar status:", e);
+      const order = orders.find(o => o.id === orderId);
+      const currentStatus = order ? order.status : 'desconhecido';
+      console.error("ORDER_STATUS_UPDATE_FAILED", {
+        orderId,
+        currentStatus,
+        targetStatus: newStatus,
+        errorCode: e?.code || e?.name || "unknown",
+        errorMessage: e?.message || String(e),
+        httpStatus: e?.status || null
+      });
       let errorMsg = "Não foi possível atualizar o status no servidor. Verifique a conexão.";
       if (e.message) {
         try {
           const parsed = JSON.parse(e.message);
-          if (parsed.error && (parsed.error.includes("Transição") || parsed.error.includes("Não é permitido") || parsed.error.includes("não existe"))) {
+          if (parsed.error && (parsed.error.includes("Transição") || parsed.error.includes("Não é permitido") || parsed.error.includes("não existe") || parsed.error.includes("permissão") || parsed.error.includes("permission-denied"))) {
             errorMsg = parsed.error;
           }
         } catch {
-          if (e.message.includes("Transição") || e.message.includes("Não é permitido") || e.message.includes("não existe")) {
+          if (e.message.includes("Transição") || e.message.includes("Não é permitido") || e.message.includes("não existe") || e.message.includes("permissão") || e.message.includes("permission-denied")) {
             errorMsg = e.message;
           }
         }
+      }
+      if (e?.code === 'permission-denied' || e?.message?.includes('permission-denied') || e?.message?.includes('insufficient permissions')) {
+        errorMsg = "Seu perfil não possui permissão para atualizar este pedido.";
       }
       showToast(errorMsg, 'error');
       throw e;
@@ -945,15 +963,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     if (!isDemo && catalogDataSource === 'firestore') {
+      const startTime = Date.now();
+      console.log(`[Diagnostic] Iniciando submit do produto ${product.id} em ${new Date(startTime).toISOString()}`);
+      
       try {
         await productsRepository.saveProduct(establishmentId, product);
-      } catch (err) {
+
+        const endTime = Date.now();
+        console.log(`[Diagnostic] Fim da requisição. Tempo de gravação no Firestore: ${endTime - startTime}ms. Quantidade de writes lógicos: 1.`);
+      } catch (err: any) {
         console.error("Error saving product to Firestore:", err);
-        showToast("Erro ao salvar o produto no servidor.", 'error');
+        showToast("Erro ao salvar o produto no servidor. Verifique sua conexão.", 'error');
         throw err;
       }
     }
 
+    const stateStartTime = Date.now();
     setProducts((prev) => {
       const currentList = prev[establishmentId] || [];
       const index = currentList.findIndex(p => p.id === product.id);
@@ -970,28 +995,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         [establishmentId]: updatedList
       };
     });
+    console.log(`[Diagnostic] Tempo de atualização local do estado: ${Date.now() - stateStartTime}ms`);
 
     if (!options?.silent) {
       if (isUpdate) {
         showToast('Produto atualizado com sucesso!', 'success', `product-update-success-${product.id}`);
       } else {
-        showToast('Produto adicionado ao cardápio!', 'success', `product-add-success-${product.id}`);
+        showToast('Produto adicionado ao catálogo!', 'success', `product-add-success-${product.id}`);
       }
     }
   };
 
-  const deleteProduct = (establishmentId: string, productId: string) => {
+  const deleteProduct = async (establishmentId: string, productId: string) => {
     if (!isDemo && catalogDataSource === 'firestore') {
-      const currentList = products[establishmentId] || [];
-      const prod = currentList.find(p => p.id === productId);
-      if (prod) {
-        const updated = { ...prod, available: false, active: false };
-        productsRepository.saveProduct(establishmentId, updated).then(() => {
-          showToast('Produto desativado com sucesso!', 'info');
-        }).catch((err) => {
-          console.error("Error disabling product:", err);
-          showToast('Erro ao desativar produto.', 'error');
+      try {
+        await productsRepository.deleteProduct(productId);
+        setProducts((prev) => {
+          const currentList = prev[establishmentId] || [];
+          const updatedList = currentList.filter(p => p.id !== productId);
+          return {
+            ...prev,
+            [establishmentId]: updatedList
+          };
         });
+      } catch (err) {
+        console.error("Error deleting product from Firestore:", err);
+        throw err;
       }
     } else {
       setProducts((prev) => {
@@ -1002,7 +1031,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           [establishmentId]: updatedList
         };
       });
-      showToast('Produto excluído do cardápio!', 'info');
+      showToast('Produto excluído do catálogo!', 'info');
     }
   };
 
@@ -1120,6 +1149,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setOrders,
       ordersLoading,
       cart,
+      pendingCartItem,
+      setPendingCartItem,
       addToCart,
       updateCartItemQuantity,
       removeFromCart,
@@ -1134,6 +1165,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setTickets,
       feedbacks,
       setFeedbacks,
+      allDeliveryZones: allDeliveryZonesState,
       placeOrder,
       updateOrderStatus,
       updateOrderPaymentStatus,

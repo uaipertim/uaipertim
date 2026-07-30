@@ -3,6 +3,7 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db, databaseId } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { useApp } from '../context/AppContext';
+import { AutomaticCatalogGenerator } from './AutomaticCatalogGenerator';
 import { catalogMigrationService, MigrationAnalysis, DryRunResult } from '../services/catalogMigrationService';
 import { catalogValidationService, ValidationReport } from '../services/catalogValidationService';
 import { 
@@ -30,6 +31,7 @@ export const CatalogMigrationPage: React.FC = () => {
   const { showToast } = useApp();
 
   const [activeStep, setActiveStep] = useState<1 | 2 | 3 | 4>(1);
+  const [subTab, setSubTab] = useState<'migration' | 'generator'>('migration');
 
   // Status variables
   const [analysis, setAnalysis] = useState<MigrationAnalysis | null>(null);
@@ -265,7 +267,7 @@ export const CatalogMigrationPage: React.FC = () => {
             Migração e Sincronização do Catálogo
           </h1>
           <p className="text-sm text-[#EADFD8] leading-relaxed">
-            Configure, analise, simule e migre as tabelas de cidades, estabelecimentos e cardápios para o banco de dados oficial Cloud Firestore de forma idempotente e segura.
+            Configure, analise, simule e migre as tabelas de cidades, estabelecimentos e catálogos para o banco de dados oficial Cloud Firestore de forma idempotente e segura.
           </p>
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <span className="text-xs font-mono text-[#756B66]">Fonte ativa atualmente:</span>
@@ -284,8 +286,36 @@ export const CatalogMigrationPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Migration Steps Navigation */}
-      <div className="grid grid-cols-4 gap-3 bg-white p-3 rounded-2xl border border-[#EADFD8] shadow-xs">
+      {/* Sub-Tabs Switcher */}
+      <div className="flex border-b border-[#EADFD8] gap-4">
+        <button
+          onClick={() => setSubTab('migration')}
+          className={`pb-3 text-sm font-black transition-all border-b-2 px-1 ${
+            subTab === 'migration'
+              ? 'border-[#E94F2F] text-[#E94F2F]'
+              : 'border-transparent text-[#756B66] hover:text-[#201A17]'
+          }`}
+        >
+          Migração e Sincronização Geral
+        </button>
+        <button
+          onClick={() => setSubTab('generator')}
+          className={`pb-3 text-sm font-black transition-all border-b-2 px-1 ${
+            subTab === 'generator'
+              ? 'border-[#E94F2F] text-[#E94F2F]'
+              : 'border-transparent text-[#756B66] hover:text-[#201A17]'
+          }`}
+        >
+          Gerador Automático de Catálogo
+        </button>
+      </div>
+
+      {subTab === 'generator' ? (
+        <AutomaticCatalogGenerator isActiveSource={isActiveSource} />
+      ) : (
+        <>
+          {/* Migration Steps Navigation */}
+          <div className="grid grid-cols-4 gap-3 bg-white p-3 rounded-2xl border border-[#EADFD8] shadow-xs">
         {[
           { step: 1, label: '1. Analisar Dados', desc: 'Estrutura local', icon: HelpCircle },
           { step: 2, label: '2. Simular (Dry Run)', desc: 'Validar relações', icon: RefreshCw },
@@ -363,7 +393,7 @@ export const CatalogMigrationPage: React.FC = () => {
                       <Building2 className="w-5 h-5" />
                     </div>
                     <div>
-                      <div className="text-[10px] font-black text-[#756B66] uppercase tracking-wider">Lojas Oficiais</div>
+                      <div className="text-[10px] font-black text-[#756B66] uppercase tracking-wider">Estabelecimentos Oficiais</div>
                       <div className="text-xl font-black text-[#201A17] font-mono">{analysis.establishmentsCount}</div>
                     </div>
                   </div>
@@ -407,7 +437,7 @@ export const CatalogMigrationPage: React.FC = () => {
 
                       {/* Missing City ID Check */}
                       <div className="flex items-center justify-between">
-                        <span className="text-[#756B66] font-bold">Lojas sem cidade válida</span>
+                        <span className="text-[#756B66] font-bold">Estabelecimentos sem cidade válida</span>
                         {analysis.missingCityIds.length === 0 ? (
                           <span className="text-emerald-600 font-bold bg-emerald-50 px-2 py-0.5 rounded">Nenhuma</span>
                         ) : (
@@ -517,7 +547,7 @@ export const CatalogMigrationPage: React.FC = () => {
                     <span className="text-[10px] text-[#756B66]">Chave: id slug</span>
                   </div>
                   <div className="bg-[#F7F4EF] p-4 rounded-xl border border-[#EADFD8]">
-                    <div className="text-[10px] font-black text-[#756B66] uppercase tracking-wider">Lojas a Gravar</div>
+                    <div className="text-[10px] font-black text-[#756B66] uppercase tracking-wider">Estabelecimentos a Gravar</div>
                     <div className="text-xl font-black text-[#201A17] font-mono mt-1">{dryRun.counts.establishments}</div>
                     <span className="text-[10px] text-[#756B66]">Endereço estruturado</span>
                   </div>
@@ -733,7 +763,7 @@ export const CatalogMigrationPage: React.FC = () => {
                       </h4>
                       <p className="text-xs leading-relaxed opacity-90 mt-0.5">
                         {validationReport.isValid 
-                          ? 'Todos os 10 testes rigorosos de integridade, preços, relações e preservação de cardápios passaram com louvor no banco de dados.' 
+                          ? 'Todos os 10 testes rigorosos de integridade, preços, relações e preservação de catálogos passaram com louvor no banco de dados.' 
                           : 'Alguns testes falharam. Corrija a migração e tente auditar novamente.'}
                       </p>
                     </div>
@@ -751,7 +781,7 @@ export const CatalogMigrationPage: React.FC = () => {
                       </div>
                     </div>
                     <div className="bg-[#F7F4EF] p-3.5 rounded-xl border border-[#EADFD8] flex items-center justify-between">
-                      <span className="text-xs font-bold text-[#756B66]">Lojas</span>
+                      <span className="text-xs font-bold text-[#756B66]">Estabelecimentos</span>
                       <div className="text-xs font-mono font-black text-[#201A17]">
                         Local: {validationReport.counts.establishments.local} / Firestore: {validationReport.counts.establishments.firestore}
                       </div>
@@ -811,7 +841,7 @@ export const CatalogMigrationPage: React.FC = () => {
                       <h4 className="text-xs font-black uppercase tracking-wider font-sans">Pronto para ativação geral</h4>
                     </div>
                     <p className="text-xs text-[#EADFD8] leading-relaxed">
-                      Sua migração de catálogo passou em 100% dos testes da suíte de integridade. Agora, você pode habilitar o Cloud Firestore de produção para ser a fonte oficial e síncrona do catálogo e cardápios de toda a plataforma UaiPertim!
+                      Sua migração de catálogo passou em 100% dos testes da suíte de integridade. Agora, você pode habilitar o Cloud Firestore de produção para ser a fonte oficial e síncrona do catálogo de toda a plataforma UaiPertim!
                     </p>
                     <div className="flex items-center gap-4 pt-1">
                       {isActiveSource ? (
@@ -846,6 +876,8 @@ export const CatalogMigrationPage: React.FC = () => {
           </div>
         )}
       </div>
-    </div>
-  );
+    </>
+    )}
+  </div>
+);
 };

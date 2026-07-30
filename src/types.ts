@@ -5,11 +5,17 @@ export type OperationMode = 'preparation' | 'picking' | 'mixed';
 
 export interface OptionGroup {
   id: string;
+  clientKey?: string;
+  tempId?: string;
   name: string;
   description?: string;
   required: boolean;
+  minSelect: number;
+  maxSelect: number;
   minSelections: number;
   maxSelections: number;
+  allowOptionQuantity?: boolean;
+  maxQuantityPerOption?: number;
   position: number;
   active: boolean;
   displayType?: 'segmented' | 'list';
@@ -54,6 +60,14 @@ export interface Product {
   establishmentId?: string;
   menuCategoryId?: string;
   menuCategoryName?: string;
+  promotionalPrice?: number;
+  promotionEnabled?: boolean;
+  promotionSource?: 'establishment' | 'uaipertim';
+  promotionLabel?: string;
+  promotionStartsAt?: any;
+  promotionEndsAt?: any;
+  preparedToOrder?: boolean;
+  freshIngredients?: boolean;
 }
 
 export interface MenuCategory {
@@ -80,6 +94,9 @@ export interface Establishment {
   name: string;
   category: string;
   rating: number;
+  ratingCount?: number;
+  ratingAverage?: number;
+  ratingSum?: number;
   deliveryTime: string; // e.g. "30-45 min"
   deliveryFee: number;
   minOrderValue: number;
@@ -88,6 +105,7 @@ export interface Establishment {
   active: boolean;
   acceptingOrders?: boolean;
   temporarilyPaused?: boolean;
+  pausedUntil?: string | null;
   suspended?: boolean;
   featured: boolean;
   image: string;
@@ -108,6 +126,10 @@ export interface Establishment {
   cep?: string;
   atendeRetirada?: boolean;
   entregaPropria?: boolean;
+  acceptsDelivery?: boolean;
+  acceptsPickup?: boolean;
+  aboutDescription?: string;
+  acceptedPaymentMethods?: string[];
   bairrosAtendidos?: string;
   acceptCash?: boolean;
   acceptPix?: boolean;
@@ -177,6 +199,12 @@ export interface ConfiguredOrderItem {
   productImage: string | null;
   quantity: number;
   baseUnitPrice: number;
+  regularUnitPrice?: number;
+  effectiveUnitPrice?: number;
+  promotionApplied?: boolean;
+  promotionSource?: 'establishment' | 'uaipertim';
+  promotionLabel?: string;
+  discountPercentage?: number;
   selectedSize: {
     id: string;
     name: string;
@@ -238,6 +266,8 @@ export interface Order {
   notes?: string;
   establishmentId: string;
   establishmentName: string;
+  establishmentImage?: string;
+  establishmentCity?: string;
   cityId: string;
   cityName: string;
   state: string;
@@ -250,6 +280,12 @@ export interface Order {
   chatUnreadMerchant?: number;
   chatMessageCount?: number;
   loyaltyPointsGranted?: boolean;
+  reviewId?: string;
+  reviewSubmitted?: boolean;
+  reviewSubmittedAt?: string;
+  hasUnreadCustomerUpdate?: boolean;
+  customerLastSeenStatus?: string;
+  customerLastViewedAt?: any;
 }
 
 export interface SupportTicket {
@@ -272,6 +308,32 @@ export interface Feedback {
   comment: string;
   date: string;
   approved: boolean;
+}
+
+export interface Review {
+  id: string; // Matches orderId
+  orderId: string;
+  establishmentId: string;
+  establishmentName?: string;
+  customerUid: string;
+  customerName: string;
+  overallRating: number;
+  productQualityRating?: number;
+  serviceRating?: number;
+  deliveryTimeRating?: number;
+  tags?: string[];
+  comment?: string;
+  status: 'published' | 'under_review' | 'hidden';
+  createdAt: string; // ISO string
+  updatedAt: string; // ISO string
+  merchantReply?: {
+    text: string;
+    repliedAt: string;
+    repliedByUid: string;
+    repliedByName?: string;
+  } | null;
+  moderationReason?: string | null;
+  moderatedByUid?: string | null;
 }
 
 export interface DeliveryNeighborhood {
@@ -306,28 +368,28 @@ export interface BusinessHours {
 }
 
 export const ESTABLISHMENT_CATEGORIES = [
-  { id: "restaurantes", label: "Restaurantes", icon: "🍽️", homeTitle: "Restaurantes", public: true, homeOrder: 1 },
-  { id: "pizzarias", label: "Pizzarias", icon: "🍕", homeTitle: "Pizzarias", public: true, homeOrder: 2 },
-  { id: "lanches", label: "Lanches", icon: "🍔", homeTitle: "Lanches", public: true, homeOrder: 3 },
-  { id: "hamburgueres", label: "Hambúrgueres", icon: "🍔", homeTitle: "Hambúrgueres", public: true, homeOrder: 4 },
-  { id: "acai_doces", label: "Açaí e doces", icon: "🍧", homeTitle: "Açaí e doces", public: true, homeOrder: 5 },
-  { id: "padarias", label: "Padarias", icon: "🍞", homeTitle: "Padarias", public: true, homeOrder: 6 },
-  { id: "confeitarias", label: "Confeitarias", icon: "🍰", homeTitle: "Confeitarias", public: true, homeOrder: 7 },
-  { id: "japonesa", label: "Japonesa", icon: "🍣", homeTitle: "Comida japonesa", public: true, homeOrder: 8 },
-  { id: "brasileira", label: "Brasileira", icon: "🍽️", homeTitle: "Comida brasileira", public: true, homeOrder: 9 },
-  { id: "mercados", label: "Mercados", icon: "🛒", homeTitle: "Mercados", public: true, homeOrder: 10 },
-  { id: "mercearias", label: "Mercearias", icon: "🛒", homeTitle: "Mercearias", public: true, homeOrder: 11 },
-  { id: "hortifrutis", label: "Hortifrútis", icon: "🥦", homeTitle: "Hortifrútis", public: true, homeOrder: 12 },
-  { id: "acougues", label: "Açougues", icon: "🥩", homeTitle: "Açougues", public: true, homeOrder: 13 },
-  { id: "farmacias", label: "Farmácias", icon: "💊", homeTitle: "Farmácias", public: true, homeOrder: 14 },
-  { id: "pet_shops", label: "Pet Shops", icon: "🐾", homeTitle: "Pet Shops", public: true, homeOrder: 15 },
-  { id: "agropecuarias", label: "Agropecuárias", icon: "🌱", homeTitle: "Agropecuárias", public: true, homeOrder: 16 },
-  { id: "bebidas", label: "Bebidas", icon: "🍺", homeTitle: "Bebidas", public: true, homeOrder: 17 },
-  { id: "conveniencias", label: "Conveniências", icon: "🏪", homeTitle: "Conveniências", public: true, homeOrder: 18 },
-  { id: "papelarias", label: "Papelarias", icon: "✏️", homeTitle: "Papelarias", public: true, homeOrder: 19 },
-  { id: "floriculturas", label: "Floriculturas", icon: "🌸", homeTitle: "Floriculturas", public: true, homeOrder: 20 },
-  { id: "materiais_construcao", label: "Materiais de construção", icon: "🧱", homeTitle: "Materiais de construção", public: true, homeOrder: 21 },
-  { id: "utilidades_domesticas", label: "Utilidades domésticas", icon: "🧹", homeTitle: "Utilidades domésticas", public: true, homeOrder: 22 }
+  { id: "restaurantes", filterLabel: "Restaurantes", establishmentLabel: "Restaurante", label: "Restaurantes", icon: "🍽️", homeTitle: "Restaurantes", public: true, homeOrder: 1 },
+  { id: "pizzarias", filterLabel: "Pizzarias", establishmentLabel: "Pizzaria", label: "Pizzarias", icon: "🍕", homeTitle: "Pizzarias", public: true, homeOrder: 2 },
+  { id: "lanches", filterLabel: "Lanches", establishmentLabel: "Lanche", label: "Lanches", icon: "🍔", homeTitle: "Lanches", public: true, homeOrder: 3 },
+  { id: "hamburgueres", filterLabel: "Hambúrgueres", establishmentLabel: "Hamburgueria", label: "Hambúrgueres", icon: "🍔", homeTitle: "Hambúrgueres", public: true, homeOrder: 4 },
+  { id: "acai_doces", filterLabel: "Açaí e doces", establishmentLabel: "Açaí e doces", label: "Açaí e doces", icon: "🍧", homeTitle: "Açaí e doces", public: true, homeOrder: 5 },
+  { id: "padarias", filterLabel: "Padarias", establishmentLabel: "Padaria", label: "Padarias", icon: "🍞", homeTitle: "Padarias", public: true, homeOrder: 6 },
+  { id: "confeitarias", filterLabel: "Confeitarias", establishmentLabel: "Confeitaria", label: "Confeitarias", icon: "🍰", homeTitle: "Confeitarias", public: true, homeOrder: 7 },
+  { id: "japonesa", filterLabel: "Japonesa", establishmentLabel: "Japonesa", label: "Japonesa", icon: "🍣", homeTitle: "Comida japonesa", public: true, homeOrder: 8 },
+  { id: "mineira", filterLabel: "Mineira", establishmentLabel: "Mineira", label: "Mineira", icon: "🍽️", homeTitle: "Comida mineira", public: true, homeOrder: 9 },
+  { id: "mercados", filterLabel: "Mercados", establishmentLabel: "Mercado", label: "Mercados", icon: "🛒", homeTitle: "Mercados", public: true, homeOrder: 10 },
+  { id: "mercearias", filterLabel: "Mercearias", establishmentLabel: "Mercearia", label: "Mercearias", icon: "🛒", homeTitle: "Mercearias", public: true, homeOrder: 11 },
+  { id: "hortifrutis", filterLabel: "Hortifrútis", establishmentLabel: "Hortifrúti", label: "Hortifrútis", icon: "🥦", homeTitle: "Hortifrútis", public: true, homeOrder: 12 },
+  { id: "acougues", filterLabel: "Açougues", establishmentLabel: "Açougue", label: "Açougues", icon: "🥩", homeTitle: "Açougues", public: true, homeOrder: 13 },
+  { id: "farmacias", filterLabel: "Farmácias", establishmentLabel: "Farmácia", label: "Farmácias", icon: "💊", homeTitle: "Farmácias", public: true, homeOrder: 14 },
+  { id: "pet_shops", filterLabel: "Pet Shops", establishmentLabel: "Pet Shop", label: "Pet Shops", icon: "🐾", homeTitle: "Pet Shops", public: true, homeOrder: 15 },
+  { id: "agropecuarias", filterLabel: "Agropecuárias", establishmentLabel: "Agropecuária", label: "Agropecuárias", icon: "🌱", homeTitle: "Agropecuárias", public: true, homeOrder: 16 },
+  { id: "bebidas", filterLabel: "Bebidas", establishmentLabel: "Bebida", label: "Bebidas", icon: "🍺", homeTitle: "Bebidas", public: true, homeOrder: 17 },
+  { id: "conveniencias", filterLabel: "Conveniências", establishmentLabel: "Conveniência", label: "Conveniências", icon: "🏪", homeTitle: "Conveniências", public: true, homeOrder: 18 },
+  { id: "papelarias", filterLabel: "Papelarias", establishmentLabel: "Papelaria", label: "Papelarias", icon: "✏️", homeTitle: "Papelarias", public: true, homeOrder: 19 },
+  { id: "floriculturas", filterLabel: "Floriculturas", establishmentLabel: "Floricultura", label: "Floriculturas", icon: "🌸", homeTitle: "Floriculturas", public: true, homeOrder: 20 },
+  { id: "materiais_construcao", filterLabel: "Materiais de construção", establishmentLabel: "Material de construção", label: "Materiais de construção", icon: "🧱", homeTitle: "Materiais de construção", public: true, homeOrder: 21 },
+  { id: "utilidades_domesticas", filterLabel: "Utilidades domésticas", establishmentLabel: "Utilidade doméstica", label: "Utilidades domésticas", icon: "🧹", homeTitle: "Utilidades domésticas", public: true, homeOrder: 22 }
 ];
 
 export const PUBLIC_ESTABLISHMENT_CATEGORIES = ESTABLISHMENT_CATEGORIES.filter(c => c.public);
@@ -342,7 +404,8 @@ export const CATEGORY_LABELS: Record<string, string> = {
   padarias: "Padarias",
   confeitarias: "Confeitarias",
   japonesa: "Japonesa",
-  brasileira: "Brasileira",
+  mineira: "Mineira",
+  brasileira: "Mineira",
   mercados: "Mercados",
   mercearias: "Mercearias",
   hortifrutis: "Hortifrútis",
@@ -358,6 +421,9 @@ export const CATEGORY_LABELS: Record<string, string> = {
   utilidades_domesticas: "Utilidades domésticas",
 
   // Legacy mappings for robustness and safety
+  comida_brasileira: 'Mineira',
+  culinaria_brasileira: 'Mineira',
+  comida_mineira: 'Mineira',
   restaurants: 'Restaurantes',
   pizzerias: 'Pizzarias',
   pizzas: 'Pizzarias',

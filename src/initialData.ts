@@ -80,7 +80,7 @@ export const INITIAL_ESTABLISHMENTS: Establishment[] = [
   {
     id: 'sabor-mineiro',
     name: 'Sabor Mineiro',
-    category: 'Brasileira',
+    category: 'Mineira',
     rating: 4.8,
     deliveryTime: '40-55 min',
     deliveryFee: 6.00,

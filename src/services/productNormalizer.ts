@@ -2,6 +2,51 @@ import { Product, Establishment, CATEGORY_LABELS } from '../types';
 import { INITIAL_ESTABLISHMENTS } from '../initialData';
 import { normalizeCategoryId } from '../utils/labelUtils';
 
+export function normalizeOptionGroup(group: any): any {
+  const required = Boolean(
+    group.required ??
+    group.isRequired ??
+    false
+  );
+
+  const minSelect = required
+    ? Number(group.minSelect ?? group.minSelections ?? group.min ?? 1)
+    : 0;
+
+  const maxSelect = Math.max(
+    minSelect,
+    Number(
+      group.maxSelect ??
+      group.maxSelections ??
+      group.maxAllowed ??
+      group.max ??
+      1
+    )
+  );
+
+  const allowOptionQuantity = Boolean(
+    group.allowOptionQuantity ??
+    (group.name?.toLowerCase().includes('adicionais') || group.id?.toLowerCase().includes('adicionais') || false)
+  );
+
+  const maxQuantityPerOption = Number(
+    group.maxQuantityPerOption ??
+    group.maxQuantity ??
+    5
+  );
+
+  return {
+    ...group,
+    required,
+    minSelect,
+    maxSelect,
+    minSelections: minSelect,
+    maxSelections: maxSelect,
+    allowOptionQuantity,
+    maxQuantityPerOption
+  };
+}
+
 export function normalizeProductFromFirestore(data: any, id: string): Product {
   const basePrice = typeof data.basePrice === 'number' ? data.basePrice : (typeof data.price === 'number' ? data.price : 0);
   
@@ -70,9 +115,11 @@ export function normalizeProductFromFirestore(data: any, id: string): Product {
   const incomingGroups = data.optionGroups || [];
   const normalizedGroups: any[] = [...incomingGroups];
 
+  const hasExplicitOptionGroups = data.optionGroups !== undefined && Array.isArray(data.optionGroups);
+
   // 1. Unify Sizes
   const hasSizeGroup = normalizedGroups.some(g => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho');
-  if (!hasSizeGroup && sizesList.length > 0) {
+  if (!hasExplicitOptionGroups && !hasSizeGroup && sizesList.length > 0) {
     const options = sizesList.map((s: any, idx: number) => ({
       id: s.id || s.name?.toLowerCase().replace(/\s+/g, '-') || `size-${idx}`,
       name: s.name,
@@ -104,7 +151,7 @@ export function normalizeProductFromFirestore(data: any, id: string): Product {
 
   // 2. Unify Borders
   const hasBorderGroup = normalizedGroups.some(g => g.name.toLowerCase().includes('borda') || g.id === 'borda' || g.id === 'escolha-a-borda');
-  if (!hasBorderGroup && crustsList.length > 0) {
+  if (!hasExplicitOptionGroups && !hasBorderGroup && crustsList.length > 0) {
     const options = crustsList.map((c: any, idx: number) => ({
       id: c.id || c.name?.toLowerCase().replace(/\s+/g, '-') || `border-${idx}`,
       name: c.name,
@@ -136,7 +183,7 @@ export function normalizeProductFromFirestore(data: any, id: string): Product {
 
   // 3. Unify Extras (Adicionais premium)
   const hasExtrasGroup = normalizedGroups.some(g => g.name.toLowerCase().includes('adicionais premium') || g.id === 'adicionais-premium' || g.name.toLowerCase() === 'adicionais');
-  if (!hasExtrasGroup && extrasList.length > 0) {
+  if (!hasExplicitOptionGroups && !hasExtrasGroup && extrasList.length > 0) {
     const options = extrasList.map((e: any, idx: number) => ({
       id: e.id || e.name?.toLowerCase().replace(/\s+/g, '-') || `extra-${idx}`,
       name: e.name,
@@ -193,17 +240,20 @@ export function normalizeProductFromFirestore(data: any, id: string): Product {
     }
   });
 
+  // Canonical normalization for all groups
+  const finalGroupsCanonical = normalizedGroups.map(g => normalizeOptionGroup(g));
+
   // Sort groups by position
-  normalizedGroups.sort((a, b) => a.position - b.position);
+  finalGroupsCanonical.sort((a, b) => a.position - b.position);
 
   // Sync back to sizes, borders, and extras arrays for compatibility if needed, but optionGroups is canonical!
-  const finalSizes = normalizedGroups.find(g => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho')
+  const finalSizes = finalGroupsCanonical.find(g => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho')
     ?.options.filter((o: any) => o.active).map((o: any) => o.name) || sizesStrings;
 
-  const finalBorders = normalizedGroups.find(g => g.name.toLowerCase().includes('borda') || g.id === 'borda' || g.id === 'escolha-a-borda')
+  const finalBorders = finalGroupsCanonical.find(g => g.name.toLowerCase().includes('borda') || g.id === 'borda' || g.id === 'escolha-a-borda')
     ?.options.filter((o: any) => o.active).map((o: any) => o.name) || bordersStrings;
 
-  const finalExtras = normalizedGroups.find(g => g.name.toLowerCase().includes('adicionais premium') || g.id === 'adicionais-premium' || g.name.toLowerCase() === 'adicionais')
+  const finalExtras = finalGroupsCanonical.find(g => g.name.toLowerCase().includes('adicionais premium') || g.id === 'adicionais-premium' || g.name.toLowerCase() === 'adicionais')
     ?.options.filter((o: any) => o.active).map((o: any) => ({ name: o.name, price: o.additionalPrice })) || extrasList.filter((e: any) => e.active !== false).map((e: any) => ({ name: e.name, price: e.price }));
 
   return {
@@ -232,9 +282,17 @@ export function normalizeProductFromFirestore(data: any, id: string): Product {
     slug: data.slug || id || '',
     notesEnabled: data.notesEnabled !== undefined ? data.notesEnabled : true,
     sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 1,
-    optionGroups: normalizedGroups,
+    optionGroups: finalGroupsCanonical,
     menuCategoryId: data.menuCategoryId || null,
-    menuCategoryName: data.menuCategoryName || null
+    menuCategoryName: data.menuCategoryName || null,
+    promotionalPrice: typeof data.promotionalPrice === 'number' ? data.promotionalPrice : undefined,
+    promotionEnabled: data.promotionEnabled === true,
+    promotionSource: data.promotionSource || null,
+    promotionLabel: data.promotionLabel || null,
+    promotionStartsAt: data.promotionStartsAt || null,
+    promotionEndsAt: data.promotionEndsAt || null,
+    preparedToOrder: data.preparedToOrder === true,
+    freshIngredients: data.freshIngredients === true
   } as any;
 }
 
@@ -267,14 +325,14 @@ export function normalizeEstablishmentFromFirestore(data: any, id: string): Esta
   const catLower = categoryRaw.toLowerCase().trim();
 
   if (catLower === 'pizzas' || catLower === 'pizzarias' || catLower === 'pizzerias') {
-    categoryStable = 'pizzerias';
+    categoryStable = 'pizzarias';
   } else if (catLower === 'supermercado' || catLower === 'mercados' || catLower === 'markets') {
     categoryStable = 'markets';
   } else if (catLower === 'lanches' || catLower === 'snacks') {
     categoryStable = 'snacks';
   } else if (catLower === 'hambúrgueres' || catLower === 'burgers') {
     categoryStable = 'burgers';
-  } else if (catLower === 'japonesa' || catLower === 'brasileira' || catLower === 'restaurantes' || catLower === 'restaurants') {
+  } else if (catLower === 'japonesa' || catLower === 'brasileira' || catLower === 'mineira' || catLower === 'restaurantes' || catLower === 'restaurants') {
     categoryStable = 'restaurants';
   } else if (catLower === 'bebidas' || catLower === 'beverages') {
     categoryStable = 'beverages';
@@ -369,10 +427,16 @@ export function normalizeEstablishmentFromFirestore(data: any, id: string): Esta
     category: categoryStable,
     categoryName: categoryName,
     categoryIds,
-    rating: typeof data.rating === 'number' ? data.rating : 4.5,
+    rating: typeof data.ratingCount === 'number' && data.ratingCount > 0
+      ? Number(data.ratingAverage || data.rating)
+      : (typeof data.rating === 'number' ? data.rating : 4.5),
+    ratingCount: typeof data.ratingCount === 'number' ? data.ratingCount : undefined,
+    ratingAverage: typeof data.ratingAverage === 'number' ? data.ratingAverage : undefined,
+    ratingSum: typeof data.ratingSum === 'number' ? data.ratingSum : undefined,
     deliveryTime: data.deliveryTime || `${data.deliveryTimeMin || 30}-${data.deliveryTimeMax || 45} min`,
     deliveryFee: deliveryFee,
     minOrderValue: minOrderValue,
+    baseEstimatedMinutes: (data.baseEstimatedMinutes !== undefined && data.baseEstimatedMinutes !== null) ? Number(data.baseEstimatedMinutes) : undefined,
     isOpen: data.open !== undefined ? data.open : (data.isOpen !== undefined ? data.isOpen : true),
     open: data.open !== undefined ? data.open : (data.isOpen !== undefined ? data.isOpen : true),
     active: platformStatus === 'active',
@@ -393,6 +457,40 @@ export function normalizeEstablishmentFromFirestore(data: any, id: string): Esta
     cep: data.address?.zipCode || data.cep || '',
     atendeRetirada: data.fulfillment?.pickup !== undefined ? data.fulfillment.pickup : (data.atendeRetirada !== undefined ? data.atendeRetirada : true),
     entregaPropria: data.fulfillment?.delivery !== undefined ? data.fulfillment.delivery : (data.entregaPropria !== undefined ? data.entregaPropria : true),
+    acceptsDelivery: typeof data.acceptsDelivery === 'boolean'
+      ? data.acceptsDelivery
+      : (data.fulfillment?.delivery !== undefined ? data.fulfillment.delivery : (data.entregaPropria !== undefined ? data.entregaPropria : true)),
+    acceptsPickup: typeof data.acceptsPickup === 'boolean'
+      ? data.acceptsPickup
+      : (data.fulfillment?.pickup !== undefined ? data.fulfillment.pickup : (data.atendeRetirada !== undefined ? data.atendeRetirada : true)),
+    aboutDescription: typeof data.aboutDescription === 'string'
+      ? data.aboutDescription
+      : (typeof data.description === 'string' ? data.description : ''),
+    acceptedPaymentMethods: Array.isArray(data.acceptedPaymentMethods)
+      ? data.acceptedPaymentMethods.map((m: string) => {
+          const val = m.toLowerCase();
+          if (val === 'dinheiro' || val === 'cash') return 'cash';
+          if (val === 'pix' || val === 'pix_delivery') return 'pix';
+          if (val === 'debit' || val === 'debit_card' || val === 'cartao_debito') return 'debit_card';
+          if (val === 'credit' || val === 'credit_card' || val === 'cartao_credito') return 'credit_card';
+          if (val === 'nfc' || val === 'contactless' || val === 'aproximacao' || val === 'contactless_nfc') return 'contactless_nfc';
+          return m;
+        })
+      : (() => {
+          const methods = [];
+          const payCash = data.paymentMethods?.cash !== undefined ? data.paymentMethods.cash : (data.acceptCash !== undefined ? data.acceptCash : true);
+          const payPix = data.paymentMethods?.pixOnDelivery !== undefined ? data.paymentMethods.pixOnDelivery : (data.acceptPix !== undefined ? data.acceptPix : true);
+          const payDebit = data.paymentMethods?.debitCard !== undefined ? data.paymentMethods.debitCard : (data.acceptDebitCard !== undefined ? data.acceptDebitCard : true);
+          const payCredit = data.paymentMethods?.creditCard !== undefined ? data.paymentMethods.creditCard : (data.acceptCreditCard !== undefined ? data.acceptCreditCard : true);
+          const payContactless = data.paymentMethods?.contactless !== undefined ? data.paymentMethods.contactless : (data.acceptContactless !== undefined ? data.acceptContactless : true);
+          
+          if (payCash) methods.push('cash');
+          if (payPix) methods.push('pix');
+          if (payDebit) methods.push('debit_card');
+          if (payCredit) methods.push('credit_card');
+          if (payContactless) methods.push('contactless_nfc');
+          return methods;
+        })(),
     bairrosAtendidos: data.bairrosAtendidos || '',
     logoUrl,
     coverImageUrl,
@@ -411,15 +509,26 @@ export function normalizeEstablishmentFromFirestore(data: any, id: string): Esta
     deactivationReason: data.deactivationReason || null,
 
     // Payment methods mapping
-    acceptCash: data.paymentMethods?.cash !== undefined ? data.paymentMethods.cash : (data.acceptCash !== undefined ? data.acceptCash : true),
-    acceptPix: data.paymentMethods?.pixOnDelivery !== undefined ? data.paymentMethods.pixOnDelivery : (data.acceptPix !== undefined ? data.acceptPix : true),
-    acceptDebitCard: data.paymentMethods?.debitCard !== undefined ? data.paymentMethods.debitCard : (data.acceptDebitCard !== undefined ? data.acceptDebitCard : true),
-    acceptCreditCard: data.paymentMethods?.creditCard !== undefined ? data.paymentMethods.creditCard : (data.acceptCreditCard !== undefined ? data.acceptCreditCard : true),
-    acceptContactless: data.paymentMethods?.contactless !== undefined ? data.paymentMethods.contactless : (data.acceptContactless !== undefined ? data.acceptContactless : true),
+    acceptCash: Array.isArray(data.acceptedPaymentMethods)
+      ? data.acceptedPaymentMethods.some((m: string) => ['cash', 'dinheiro'].includes(m.toLowerCase()))
+      : (data.paymentMethods?.cash !== undefined ? data.paymentMethods.cash : (data.acceptCash !== undefined ? data.acceptCash : true)),
+    acceptPix: Array.isArray(data.acceptedPaymentMethods)
+      ? data.acceptedPaymentMethods.some((m: string) => ['pix', 'pix_delivery'].includes(m.toLowerCase()))
+      : (data.paymentMethods?.pixOnDelivery !== undefined ? data.paymentMethods.pixOnDelivery : (data.acceptPix !== undefined ? data.acceptPix : true)),
+    acceptDebitCard: Array.isArray(data.acceptedPaymentMethods)
+      ? data.acceptedPaymentMethods.some((m: string) => ['debit', 'debit_card', 'cartao_debito'].includes(m.toLowerCase()))
+      : (data.paymentMethods?.debitCard !== undefined ? data.paymentMethods.debitCard : (data.acceptDebitCard !== undefined ? data.acceptDebitCard : true)),
+    acceptCreditCard: Array.isArray(data.acceptedPaymentMethods)
+      ? data.acceptedPaymentMethods.some((m: string) => ['credit', 'credit_card', 'cartao_credito'].includes(m.toLowerCase()))
+      : (data.paymentMethods?.creditCard !== undefined ? data.paymentMethods.creditCard : (data.acceptCreditCard !== undefined ? data.acceptCreditCard : true)),
+    acceptContactless: Array.isArray(data.acceptedPaymentMethods)
+      ? data.acceptedPaymentMethods.some((m: string) => ['nfc', 'contactless', 'aproximacao', 'contactless_nfc'].includes(m.toLowerCase()))
+      : (data.paymentMethods?.contactless !== undefined ? data.paymentMethods.contactless : (data.acceptContactless !== undefined ? data.acceptContactless : true)),
     acceptDeliveryPayment: data.acceptDeliveryPayment !== undefined ? data.acceptDeliveryPayment : true,
     acceptPickupPayment: data.acceptPickupPayment !== undefined ? data.acceptPickupPayment : true,
     suspended: platformStatus === 'inactive',
     temporarilyPaused: operationalPause,
+    pausedUntil: data.pausedUntil || null,
     acceptingOrders: data.acceptingOrders !== undefined ? data.acceptingOrders : !operationalPause,
   } as any;
 }

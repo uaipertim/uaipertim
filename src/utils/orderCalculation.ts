@@ -1,6 +1,115 @@
 import { Product, ConfiguredOrderItem, CartItem, SelectedOptionGroup } from '../types';
 
 /**
+ * Helper to safely convert different formats into a JS Date.
+ */
+export function convertToDate(val: any): Date | null {
+  if (!val) return null;
+  if (typeof val.toDate === 'function') return val.toDate();
+  if (val instanceof Date) return val;
+  if (typeof val === 'string' || typeof val === 'number') {
+    const str = String(val).trim();
+    // Check Brazilian format: DD/MM/YYYY HH:mm or DD/MM/YYYY
+    const brPattern = /^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?$/;
+    const brMatch = str.match(brPattern);
+    if (brMatch) {
+      const day = parseInt(brMatch[1], 10);
+      const month = parseInt(brMatch[2], 10) - 1; // 0-indexed month
+      const year = parseInt(brMatch[3], 10);
+      const hours = brMatch[4] ? parseInt(brMatch[4], 10) : 0;
+      const minutes = brMatch[5] ? parseInt(brMatch[5], 10) : 0;
+      const d = new Date(year, month, day, hours, minutes, 0, 0);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof val === 'object' && val.seconds !== undefined) {
+    return new Date(val.seconds * 1000);
+  }
+  if (typeof val === 'object' && val._seconds !== undefined) {
+    return new Date(val._seconds * 1000);
+  }
+  return null;
+}
+
+/**
+ * Checks if a product's promotion is currently active based on dates and prices.
+ */
+export function isPromotionActive(product: Product, currentDate: Date = new Date()): boolean {
+  if (!product) return false;
+  if (!product.promotionEnabled) return false;
+  if (product.promotionalPrice === undefined || product.promotionalPrice === null) return false;
+  if (product.promotionalPrice <= 0 || product.promotionalPrice >= product.price) return false;
+
+  if (product.promotionStartsAt) {
+    const start = convertToDate(product.promotionStartsAt);
+    if (start && currentDate < start) return false;
+  }
+  if (product.promotionEndsAt) {
+    const end = convertToDate(product.promotionEndsAt);
+    if (end && currentDate > end) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Gets the effective base price of a product, considering active promotions.
+ */
+export function getEffectiveProductPrice(product: Product, currentDate: Date = new Date()): number {
+  if (!product) return 0;
+  if (isPromotionActive(product, currentDate)) {
+    return product.promotionalPrice!;
+  }
+  return product.price;
+}
+
+/**
+ * Calculates discount percentage as an integer.
+ */
+export function calculateDiscountPercentage(price: number, promotionalPrice: number): number {
+  if (!price || !promotionalPrice || price <= promotionalPrice) return 0;
+  const pct = Math.round(((price - promotionalPrice) / price) * 100);
+  if (pct < 0) return 0;
+  if (pct > 99) return 99;
+  return pct;
+}
+
+/**
+ * Validates promotional data.
+ */
+export interface PromotionValidationResult {
+  isValid: boolean;
+  error?: string;
+}
+
+export function validatePromotion(
+  price: number,
+  promotionalPrice: number | undefined,
+  startsAt: any,
+  endsAt: any
+): PromotionValidationResult {
+  if (promotionalPrice === undefined || promotionalPrice === null) {
+    return { isValid: false, error: 'O preço promocional deve ser menor que o preço normal.' };
+  }
+  if (promotionalPrice <= 0) {
+    return { isValid: false, error: 'O preço promocional deve ser menor que o preço normal.' };
+  }
+  if (promotionalPrice >= price) {
+    return { isValid: false, error: 'O preço promocional deve ser menor que o preço normal.' };
+  }
+  if (startsAt && endsAt) {
+    const start = convertToDate(startsAt);
+    const end = convertToDate(endsAt);
+    if (start && end && end <= start) {
+      return { isValid: false, error: 'A data de encerramento deve ser posterior à data de início.' };
+    }
+  }
+  return { isValid: true };
+}
+
+/**
  * Calculates and maps a product and its customization choices into a ConfiguredOrderItem.
  * This ensures consistent calculation logic across all views (modal, cart, checkout, order histories).
  */
@@ -13,7 +122,14 @@ export function calculateConfiguredOrderItem(
   notes: string | null | undefined,
   selectedOptionGroups?: SelectedOptionGroup[]
 ): ConfiguredOrderItem {
-  const baseUnitPrice = product.price;
+  const activePromo = isPromotionActive(product);
+  const baseUnitPrice = activePromo ? product.promotionalPrice! : product.price;
+  const regularUnitPrice = product.price;
+  const effectiveUnitPrice = baseUnitPrice;
+  const promotionApplied = activePromo;
+  const promotionSource = activePromo ? product.promotionSource : undefined;
+  const promotionLabel = activePromo ? (product.promotionLabel || (product.promotionSource === 'uaipertim' ? 'Oferta UaiPertim' : 'Oferta')) : undefined;
+  const discountPercentage = activePromo ? calculateDiscountPercentage(product.price, product.promotionalPrice!) : undefined;
 
   // Find size, border, and extras groups in product's optionGroups
   const sizeGroup = product.optionGroups?.find(g => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho');
@@ -205,6 +321,12 @@ export function calculateConfiguredOrderItem(
     productImage: product.image || null,
     quantity,
     baseUnitPrice,
+    regularUnitPrice,
+    effectiveUnitPrice,
+    promotionApplied,
+    promotionSource,
+    promotionLabel,
+    discountPercentage,
     selectedSize: selectedSizeObj,
     selectedCrust: selectedCrustObj,
     selectedExtras: selectedExtrasList,
@@ -238,20 +360,42 @@ export function normalizeOrderItem(item: any): ConfiguredOrderItem {
     };
   }
 
-  // If item is already in the fully structured format (contains lineTotal)
-  if (typeof item.lineTotal === 'number' && 'baseUnitPrice' in item) {
-    return item as ConfiguredOrderItem;
-  }
-
   // Extract core product info
   const productObj: Product = item.product || {};
   const productId = productObj.id || item.productId || item.id || '';
   const productName = productObj.name || item.productName || item.name || 'Produto';
   const productImage = productObj.image || item.productImage || null;
   const quantity = typeof item.quantity === 'number' ? item.quantity : 1;
-  const baseUnitPrice = typeof item.baseUnitPrice === 'number'
+
+  // Resolve prices considering promotions
+  const rawBasePrice = typeof item.baseUnitPrice === 'number'
     ? item.baseUnitPrice
     : (typeof item.price === 'number' ? item.price : (productObj.price || 0));
+
+  const promoActive = productObj ? isPromotionActive(productObj) : false;
+  const baseUnitPrice = promoActive ? productObj.promotionalPrice! : rawBasePrice;
+
+  const regularUnitPrice = typeof item.regularUnitPrice === 'number'
+    ? item.regularUnitPrice
+    : (productObj ? productObj.price : rawBasePrice);
+
+  const effectiveUnitPrice = typeof item.effectiveUnitPrice === 'number'
+    ? item.effectiveUnitPrice
+    : baseUnitPrice;
+
+  const promotionApplied = typeof item.promotionApplied === 'boolean'
+    ? item.promotionApplied
+    : promoActive;
+
+  const promotionSource = item.promotionSource || (promoActive ? productObj.promotionSource : undefined);
+  const promotionLabel = item.promotionLabel || (promoActive ? (productObj.promotionLabel || (productObj.promotionSource === 'uaipertim' ? 'Oferta UaiPertim' : 'Oferta')) : undefined);
+  const discountPercentage = typeof item.discountPercentage === 'number'
+    ? item.discountPercentage
+    : (promoActive ? calculateDiscountPercentage(productObj.price, productObj.promotionalPrice!) : undefined);
+
+  // If item is already in the fully structured format (contains lineTotal)
+  // but let's recompute it if promo prices changed or were missing.
+  const hasValidTotals = typeof item.lineTotal === 'number' && 'baseUnitPrice' in item && 'regularUnitPrice' in item;
 
   // 1. Resolve Size
   let selectedSizeObj: ConfiguredOrderItem['selectedSize'] = null;
@@ -358,6 +502,18 @@ export function normalizeOrderItem(item: any): ConfiguredOrderItem {
   const crustDelta = selectedCrustObj?.priceDelta || 0;
   const extrasDelta = selectedExtrasList.reduce((sum, ex) => sum + (ex.unitPrice * ex.quantity), 0);
   const customGroupsDelta = selectedOptionGroups.reduce((sum, g) => {
+    // Skip groups that are already handled as size/border/extras to avoid double counting
+    const isLegacyGroup = 
+      g.groupId === 'escolha-o-tamanho' || 
+      g.groupId === 'escolha-a-borda' || 
+      g.groupId === 'adicionais-premium' ||
+      g.groupName.toLowerCase().includes('tamanho') ||
+      g.groupName.toLowerCase().includes('borda') ||
+      g.groupName.toLowerCase().includes('adicionais premium') ||
+      g.groupName.toLowerCase() === 'adicionais';
+      
+    if (isLegacyGroup) return sum;
+
     return sum + g.selectedOptions.reduce((innerSum, o) => {
       const qty = o.quantity ?? 1;
       return innerSum + (o.additionalPrice * qty);
@@ -374,6 +530,12 @@ export function normalizeOrderItem(item: any): ConfiguredOrderItem {
     productImage,
     quantity,
     baseUnitPrice,
+    regularUnitPrice,
+    effectiveUnitPrice,
+    promotionApplied,
+    promotionSource,
+    promotionLabel,
+    discountPercentage,
     selectedSize: selectedSizeObj,
     selectedCrust: selectedCrustObj,
     selectedExtras: selectedExtrasList,
@@ -494,4 +656,100 @@ export function getCartItemCustomizationLines(item: any): CustomizationLine[] {
 
   return Array.from(seenOptionKeys.values());
 }
+
+export interface CartTotals {
+  productsSubtotalCents: number;
+  deliveryFeeCents: number;
+  discountCents: number;
+  totalCents: number;
+}
+
+/**
+ * Calculates cart totals in cents to avoid floating-point errors.
+ * Accepts cart items, delivery fee, coupon discount and fulfillment type.
+ * Returns productsSubtotalCents, deliveryFeeCents, discountCents, totalCents.
+ */
+export function calculateCartTotals(
+  items: any[],
+  deliveryFee: number,
+  discount: number,
+  fulfillmentType: string
+): CartTotals {
+  let productsSubtotalCents = 0;
+
+  if (Array.isArray(items)) {
+    items.forEach((item) => {
+      // Normalize the item first to ensure a standard structure
+      const normalized = normalizeOrderItem(item);
+      
+      const basePriceCents = Math.round((normalized.baseUnitPrice || 0) * 100);
+      let optionsPriceCents = 0;
+
+      // 1. Size price delta
+      if (normalized.selectedSize) {
+        optionsPriceCents += Math.round((normalized.selectedSize.priceDelta || 0) * 100);
+      }
+
+      // 2. Crust/Border price delta
+      if (normalized.selectedCrust) {
+        optionsPriceCents += Math.round((normalized.selectedCrust.priceDelta || 0) * 100);
+      }
+
+      // 3. Extras / Addons price delta (deduplicated / grouped format)
+      if (Array.isArray(normalized.selectedExtras)) {
+        normalized.selectedExtras.forEach((ex) => {
+          const exQty = typeof ex.quantity === 'number' ? ex.quantity : 1;
+          const exPrice = typeof ex.unitPrice === 'number' ? ex.unitPrice : 0;
+          optionsPriceCents += Math.round(exPrice * 100) * exQty;
+        });
+      }
+
+      // 4. Custom option groups price delta
+      if (Array.isArray(normalized.selectedOptionGroups)) {
+        normalized.selectedOptionGroups.forEach((g) => {
+          // Skip groups that are already handled as size/border/extras to avoid double counting
+          const isLegacyGroup = 
+            g.groupId === 'escolha-o-tamanho' || 
+            g.groupId === 'escolha-a-borda' || 
+            g.groupId === 'adicionais-premium' ||
+            g.groupName.toLowerCase().includes('tamanho') ||
+            g.groupName.toLowerCase().includes('borda') ||
+            g.groupName.toLowerCase().includes('adicionais premium') ||
+            g.groupName.toLowerCase() === 'adicionais';
+            
+          if (isLegacyGroup) return;
+
+          if (Array.isArray(g.selectedOptions)) {
+            g.selectedOptions.forEach((o) => {
+              const oQty = typeof o.quantity === 'number' ? o.quantity : 1;
+              const oPrice = typeof o.unitPrice === 'number' 
+                ? o.unitPrice 
+                : (typeof o.additionalPrice === 'number' ? o.additionalPrice : 0);
+              optionsPriceCents += Math.round(oPrice * 100) * oQty;
+            });
+          }
+        });
+      }
+
+      const finalUnitPriceCents = basePriceCents + optionsPriceCents;
+      const quantity = typeof normalized.quantity === 'number' ? normalized.quantity : 1;
+      const lineTotalCents = finalUnitPriceCents * quantity;
+
+      productsSubtotalCents += lineTotalCents;
+    });
+  }
+
+  const isPickup = fulfillmentType === 'pickup' || fulfillmentType === 'retirada';
+  const deliveryFeeCents = isPickup ? 0 : Math.round((deliveryFee || 0) * 100);
+  const discountCents = Math.round((discount || 0) * 100);
+  const totalCents = Math.max(0, productsSubtotalCents - discountCents + deliveryFeeCents);
+
+  return {
+    productsSubtotalCents,
+    deliveryFeeCents,
+    discountCents,
+    totalCents
+  };
+}
+
 

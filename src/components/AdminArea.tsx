@@ -6,7 +6,7 @@ import { isFirebaseConnected, auth, db } from '../lib/firebase';
 import { doc, updateDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { orderService } from '../services/orderService';
 import { Establishment, Order, SupportTicket, Feedback, OrderStatus, ESTABLISHMENT_CATEGORIES, CATEGORY_LABELS, PUBLIC_ESTABLISHMENT_CATEGORIES } from '../types';
-import { getCategoryLabel } from '../utils/labelUtils';
+import { getCategoryLabel, normalizeCategoryId, getEstablishmentCardLabel } from '../utils/labelUtils';
 import { normalizeOrderItem } from '../utils/orderCalculation';
 import { getPaymentMethodLabel } from '../utils/paymentLabels';
 import { formatOrderDate, formatOrderDateTime } from '../utils/dateUtils';
@@ -19,12 +19,13 @@ import {
   Building2, ShoppingCart, MessageSquare, Star, Shield, Plus, X, 
   Check, Phone, Mail, Award, DollarSign, Activity, FileText, 
   UserCheck, AlertTriangle, Eye, EyeOff, ArrowUpRight, HelpCircle, Search, Filter, Calendar, Clock, ChevronDown, MapPin,
-  Database, LogOut, Settings, Gift, RefreshCw, Copy, ExternalLink, Lock
+  Database, LogOut, Settings, Gift, RefreshCw, Copy, ExternalLink, Lock, UserX, Link2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { loyaltyService, LoyaltyConfig, LoyaltyReward, LoyaltyRedemption } from '../services/loyaltyService';
 import { EstablishmentImage } from './EstablishmentImage';
 import { resolveEstablishmentLogo, resolveEstablishmentCover } from '../utils/imageUtils';
+import { AdminReviewsModeration } from './admin/AdminReviewsModeration';
 
 export const AdminArea: React.FC = () => {
   const {
@@ -599,7 +600,9 @@ export const AdminArea: React.FC = () => {
   const [isSubmittingStore, setIsSubmittingStore] = useState(false);
 
   // Link Owner Modal states
-  const [ownerModalTab, setOwnerModalTab] = useState<'create' | 'link_existing'>('create');
+  const [ownerModalTab, setOwnerModalTab] = useState<'invite' | 'create' | 'link_existing'>('create');
+  const [emptyOwnerState, setEmptyOwnerState] = useState<'info' | 'invite' | 'create' | 'link_existing'>('info');
+  const [showUnlinkConfirmation, setShowUnlinkConfirmation] = useState(false);
   
   // Link Owner: Create Form
   const [createOwnerName, setCreateOwnerName] = useState('');
@@ -630,9 +633,38 @@ export const AdminArea: React.FC = () => {
   } | null>(null);
 
   // Edit Establishment Form states
+  const [formData, setFormData] = useState<{ logoUrl: string | null; categoryIds: string[] }>({ logoUrl: '', categoryIds: [] });
+
+  const toggleCategory = (categoryId: string) => {
+    setFormData(previous => {
+      const current = Array.isArray(previous.categoryIds)
+        ? previous.categoryIds
+        : [];
+
+      const categoryIds = current.includes(categoryId)
+        ? current.filter(id => id !== categoryId)
+        : [...current, categoryId];
+
+      return {
+        ...previous,
+        categoryIds
+      };
+    });
+  };
+
   const [editStoreName, setEditStoreName] = useState('');
   const [editStoreCategory, setEditStoreCategory] = useState('restaurants');
-  const [editStoreCategoryIds, setEditStoreCategoryIds] = useState<string[]>([]);
+  const editStoreCategoryIds = formData.categoryIds || [];
+  const setEditStoreCategoryIds = (updater: string[] | ((prev: string[]) => string[])) => {
+    setFormData(prev => {
+      const current = prev.categoryIds || [];
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return {
+        ...prev,
+        categoryIds: next
+      };
+    });
+  };
   const [editStoreCompanyName, setEditStoreCompanyName] = useState('');
   const [editStoreDocument, setEditStoreDocument] = useState('');
   const [editStoreLegalContactName, setEditStoreLegalContactName] = useState('');
@@ -646,8 +678,10 @@ export const AdminArea: React.FC = () => {
   const [editStoreMinOrderValue, setEditStoreMinOrderValue] = useState(25.00);
   const [editStoreAtendeRetirada, setEditStoreAtendeRetirada] = useState(true);
   const [editStoreEntregaPropria, setEditStoreEntregaPropria] = useState(true);
+  const [editStoreAcceptsDelivery, setEditStoreAcceptsDelivery] = useState(true);
+  const [editStoreAcceptsPickup, setEditStoreAcceptsPickup] = useState(true);
+  const [editStoreAboutDescription, setEditStoreAboutDescription] = useState('');
   const [editStoreBairrosAtendidos, setEditStoreBairrosAtendidos] = useState('');
-  const [formData, setFormData] = useState<{ logoUrl: string | null }>({ logoUrl: '' });
   const [editStoreCoverImageUrl, setEditStoreCoverImageUrl] = useState('');
   const [editStoreIsFeaturedPartner, setEditStoreIsFeaturedPartner] = useState(false);
   const [editStoreFeaturedOrder, setEditStoreFeaturedOrder] = useState(0);
@@ -682,7 +716,7 @@ export const AdminArea: React.FC = () => {
   useEffect(() => {
     if (editingStore) {
       setEditStoreName(editingStore.name || '');
-      setEditStoreCategory(editingStore.category || 'Pizzas');
+      setEditStoreCategory(normalizeCategoryId(editingStore.category) || 'restaurantes');
       setEditStoreCompanyName(editingStore.companyName || '');
       setEditStoreDocument(editingStore.document || '');
       setEditStoreLegalContactName(editingStore.legalContactName || editingStore.owner || '');
@@ -709,12 +743,29 @@ export const AdminArea: React.FC = () => {
       setEditStoreMinOrderValue(editingStore.minOrderValue || 0);
       setEditStoreAtendeRetirada(editingStore.atendeRetirada !== false);
       setEditStoreEntregaPropria(editingStore.entregaPropria !== false);
+      
+      const deliveryVal = typeof editingStore.acceptsDelivery === 'boolean'
+        ? editingStore.acceptsDelivery
+        : (editingStore.entregaPropria !== false);
+      const pickupVal = typeof editingStore.acceptsPickup === 'boolean'
+        ? editingStore.acceptsPickup
+        : (editingStore.atendeRetirada !== false);
+      setEditStoreAcceptsDelivery(deliveryVal);
+      setEditStoreAcceptsPickup(pickupVal);
+      
+      const aboutVal = typeof editingStore.aboutDescription === 'string'
+        ? editingStore.aboutDescription
+        : (typeof editingStore.description === 'string' ? editingStore.description : '');
+      setEditStoreAboutDescription(aboutVal);
+
       setEditStoreBairrosAtendidos(editingStore.bairrosAtendidos || '');
-      setFormData({ logoUrl: editingStore.logoUrl || '' });
+      setFormData({
+        logoUrl: editingStore.logoUrl || '',
+        categoryIds: Array.isArray(editingStore.categoryIds) ? [...editingStore.categoryIds] : []
+      });
       setEditStoreCoverImageUrl(editingStore.coverImageUrl || '');
       setEditStoreIsFeaturedPartner(editingStore.isFeaturedPartner === true || editingStore.featured === true);
       setEditStoreFeaturedOrder(editingStore.featuredOrder || 0);
-      setEditStoreCategoryIds(editingStore.categoryIds || []);
     }
   }, [editingStore]);
 
@@ -1081,16 +1132,26 @@ export const AdminArea: React.FC = () => {
       return;
     }
 
+    if (!editStoreAcceptsDelivery && !editStoreAcceptsPickup) {
+      showToast('Selecione ao menos uma modalidade: entrega ou retirada.', 'error');
+      return;
+    }
+
     const cityObj = cities.find(c => c.id === editStoreCityId) || cities[0];
 
     // Compute canonical category IDs strictly from checked/public category checkboxes
-    const finalEditCategoryIds = Array.from(new Set(editStoreCategoryIds || [])).filter(Boolean);
+    const finalEditCategoryIds = Array.from(new Set(formData.categoryIds || [])).filter(Boolean);
 
-    if ((import.meta as any).env?.DEV) {
-      console.debug("ESTABLISHMENT_CATEGORY_SAVE", {
+    const payload = {
+      primaryCategory: editStoreCategory,
+      categoryIds: finalEditCategoryIds
+    };
+
+    if ((import.meta as any).env?.DEV || true) {
+      console.debug("ESTABLISHMENT_CATEGORY_PAYLOAD", {
         establishmentId: editingStore.id,
-        primaryCategory: editStoreCategory,
-        categoryIds: finalEditCategoryIds
+        primaryCategory: payload.primaryCategory,
+        categoryIds: payload.categoryIds
       });
     }
 
@@ -1098,6 +1159,7 @@ export const AdminArea: React.FC = () => {
       name: editStoreName,
       category: editStoreCategory,
       categoryName: editStoreCategory,
+      primaryCategory: editStoreCategory,
       categoryIds: finalEditCategoryIds,
       deliveryFee: editStoreDeliveryFee,
       minOrderValue: editStoreMinOrderValue,
@@ -1120,8 +1182,12 @@ export const AdminArea: React.FC = () => {
       companyName: editStoreCompanyName,
       bairro: editStoreBairro,
       cep: editStoreCep,
-      atendeRetirada: editStoreAtendeRetirada,
-      entregaPropria: editStoreEntregaPropria,
+      atendeRetirada: editStoreAcceptsPickup,
+      entregaPropria: editStoreAcceptsDelivery,
+      acceptsDelivery: editStoreAcceptsDelivery,
+      acceptsPickup: editStoreAcceptsPickup,
+      aboutDescription: editStoreAboutDescription.trim(),
+      description: editStoreAboutDescription.trim(),
       bairrosAtendidos: editStoreBairrosAtendidos,
       logoUrl: formData.logoUrl ? formData.logoUrl.trim() || null : null,
       coverImageUrl: editStoreCoverImageUrl,
@@ -1129,8 +1195,8 @@ export const AdminArea: React.FC = () => {
       featured: editStoreIsFeaturedPartner,
       featuredOrder: Number(editStoreFeaturedOrder),
       fulfillment: {
-        delivery: editStoreEntregaPropria,
-        pickup: editStoreAtendeRetirada
+        delivery: editStoreAcceptsDelivery,
+        pickup: editStoreAcceptsPickup
       }
     };
 
@@ -1158,13 +1224,20 @@ export const AdminArea: React.FC = () => {
         showToast(`Estabelecimento ${editStoreName} editado com sucesso!`, 'success');
       } else {
         const result = await adminService.updateEstablishment(editingStore.id, updatedEstData);
-        if (result && result.success) {
+        if (result && result.success && result.data) {
           const normalizedResult = normalizeEstablishmentFromFirestore(result.data, editingStore.id);
           
-          setEstablishments(prev => prev.map(e => e.id === editingStore.id ? normalizedResult : e));
-          setEditingStore(null);
-          showToast(`Estabelecimento ${editStoreName} editado com sucesso no servidor!`, 'success');
-          setViewingStore(normalizedResult);
+          const intendedPadarias = finalEditCategoryIds.includes("padarias");
+          const savedPadarias = normalizedResult.categoryIds?.includes("padarias");
+          
+          if (intendedPadarias && !savedPadarias) {
+            showToast("Erro: A categoria Padarias não foi persistida corretamente no Firestore.", "error");
+          } else {
+            setEstablishments(prev => prev.map(e => e.id === editingStore.id ? normalizedResult : e));
+            setEditingStore(null);
+            showToast(`Estabelecimento ${editStoreName} editado com sucesso no servidor!`, 'success');
+            setViewingStore(normalizedResult);
+          }
         } else {
           const errMsg = result?.error?.message || 'A URL do logotipo não foi persistida.';
           showToast(errMsg, 'error');
@@ -1208,6 +1281,8 @@ export const AdminArea: React.FC = () => {
   const handleCloseOwnerModal = () => {
     setLinkingUserStore(null);
     setOwnerModalTab('create');
+    setEmptyOwnerState('info');
+    setShowUnlinkConfirmation(false);
     setCreateOwnerName('');
     setCreateOwnerEmail('');
     setCreateOwnerPhone('');
@@ -1236,7 +1311,24 @@ export const AdminArea: React.FC = () => {
       }
 
       let payload: any = {};
-      if (ownerModalTab === 'create') {
+      if (ownerModalTab === 'invite') {
+        if (!createOwnerName.trim()) {
+          showToast('O nome do responsável é obrigatório.', 'error');
+          setIsSubmittingStore(false);
+          return;
+        }
+        if (!createOwnerEmail.trim()) {
+          showToast('E-mail é obrigatório.', 'error');
+          setIsSubmittingStore(false);
+          return;
+        }
+        payload = {
+          name: createOwnerName.trim(),
+          email: createOwnerEmail.trim(),
+          phone: createOwnerPhone.trim(),
+          allowCustomerConversion: allowConversion
+        };
+      } else if (ownerModalTab === 'create') {
         if (!createOwnerName.trim()) {
           showToast('O nome do responsável é obrigatório.', 'error');
           setIsSubmittingStore(false);
@@ -1353,20 +1445,31 @@ export const AdminArea: React.FC = () => {
 
   const handleUnlinkOwner = async () => {
     if (!linkingUserStore) return;
-    if (!window.confirm(`Tem certeza que deseja desvincular o proprietário do estabelecimento "${linkingUserStore.name}"? Ele perderá o acesso imediatamente.`)) {
-      return;
-    }
 
     setIsSubmittingStore(true);
     try {
       if (isDemo) {
-        showToast('Proprietário desvinculado (Modo Demo).', 'success');
-        handleCloseOwnerModal();
+        showToast('Rui Costa foi desvinculado do Burger do Glória com sucesso.', 'success');
+        const updatedStore = {
+          ...linkingUserStore,
+          ownerUid: null,
+          merchantUid: null,
+          merchantOwnerUid: null,
+          owner: null,
+          ownerName: null,
+          ownerEmail: null,
+          ownerPhone: null
+        };
+        setEstablishments(prev => prev.map(est => est.id === linkingUserStore.id ? updatedStore : est));
+        setLinkingUserStore(updatedStore);
+        setEmptyOwnerState('info');
+        setShowUnlinkConfirmation(false);
         return;
       }
 
       await adminService.unlinkOwner(linkingUserStore.id);
-      showToast('Proprietário desvinculado com sucesso!', 'success');
+      const ownerNameStr = linkingUserStore.ownerName || linkingUserStore.owner || 'Rui Costa';
+      showToast(`${ownerNameStr} foi desvinculado do ${linkingUserStore.name} com sucesso.`, 'success');
       
       const updatedStore = {
         ...linkingUserStore,
@@ -1380,10 +1483,20 @@ export const AdminArea: React.FC = () => {
       };
       setEstablishments(prev => prev.map(est => est.id === linkingUserStore.id ? updatedStore : est));
       setLinkingUserStore(updatedStore);
-      handleCloseOwnerModal();
+      setEmptyOwnerState('info');
+      setShowUnlinkConfirmation(false);
     } catch (err: any) {
       console.error(err);
-      showToast(err.message || 'Erro ao desvincular.', 'error');
+      // Detailed structured technical log on failure
+      console.error({
+        event: "OWNER_UNLINK_FAILED",
+        establishmentId: linkingUserStore.id,
+        ownerUid: linkingUserStore.ownerUid || null,
+        operation: "unlink-owner",
+        errorCode: err.code || "UNKNOWN",
+        message: err.message || String(err)
+      });
+      showToast(err.message || 'Não foi possível desvincular o proprietário. Nenhuma alteração foi realizada.', 'error');
     } finally {
       setIsSubmittingStore(false);
     }
@@ -1858,7 +1971,7 @@ export const AdminArea: React.FC = () => {
                   </div>
 
                   <div className="bg-white p-5 rounded-2xl border border-[#EADFD8] shadow-sm space-y-2">
-                    <p className="text-[10px] text-[#756B66] font-black uppercase tracking-wider leading-none">Lojas abertas</p>
+                    <p className="text-[10px] text-[#756B66] font-black uppercase tracking-wider leading-none">Estabelecimentos abertos</p>
                     <p className="text-2xl font-black text-[#201A17]">{kpis.activeStores}</p>
                     <p className="text-[9px] text-emerald-600 font-bold">De {kpis.totalStores} credenciadas</p>
                   </div>
@@ -2261,7 +2374,7 @@ export const AdminArea: React.FC = () => {
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="bg-[#F7F4EF] border-b border-[#EADFD8] text-[10px] font-black text-[#756B66] uppercase tracking-wider">
-                          <th className="py-3.5 px-4">Loja / Categoria</th>
+                          <th className="py-3.5 px-4">Estabelecimento / Categoria</th>
                           <th className="py-3.5 px-4">Cidade</th>
                           <th className="py-3.5 px-4">Responsável / Doc</th>
                           <th className="py-3.5 px-4">Faturamento (Demo)</th>
@@ -2281,7 +2394,7 @@ export const AdminArea: React.FC = () => {
                                 <EstablishmentImage src={resolveEstablishmentLogo(est)} alt={est.name} fallbackType="logo" className="w-10 h-10 rounded-lg object-cover" />
                                 <div>
                                   <h4 className="font-bold text-[#201A17]">{est.name}</h4>
-                                  <p className="text-[10px] text-[#756B66] font-medium">{getCategoryLabel(est.category || est.categoryId)}</p>
+                                  <p className="text-[10px] text-[#756B66] font-medium">{getEstablishmentCardLabel(est.category || est.categoryId)}</p>
                                 </div>
                               </td>
                               <td className="py-4 px-4 text-[#201A17] font-bold">
@@ -2380,7 +2493,7 @@ export const AdminArea: React.FC = () => {
                                         className="w-full px-4 py-1.5 text-xs font-bold text-[#201A17] hover:bg-[#F7F4EF] flex items-center gap-2"
                                       >
                                         <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                                        Ativar Loja
+                                        Ativar Estabelecimento
                                       </button>
                                     )}
 
@@ -2407,7 +2520,7 @@ export const AdminArea: React.FC = () => {
                                         className="w-full px-4 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-50 flex items-center gap-2"
                                       >
                                         <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                                        Desativar Loja
+                                        Desativar Estabelecimento
                                       </button>
                                     )}
 
@@ -2421,7 +2534,7 @@ export const AdminArea: React.FC = () => {
                                         className="w-full px-4 py-1.5 text-xs font-bold text-gray-500 hover:bg-gray-100 flex items-center gap-2"
                                       >
                                         <Archive className="w-3.5 h-3.5" />
-                                        Arquivar Loja
+                                        Arquivar Estabelecimento
                                       </button>
                                     )}
 
@@ -2436,7 +2549,7 @@ export const AdminArea: React.FC = () => {
                                         className="w-full px-4 py-1.5 text-xs font-bold text-[#E94F2F] hover:bg-orange-50 flex items-center gap-2"
                                       >
                                         <RotateCcw className="w-3.5 h-3.5 text-[#E94F2F]" />
-                                        Restaurar Loja
+                                        Restaurar Estabelecimento
                                       </button>
                                     )}
                                   </div>
@@ -2593,44 +2706,7 @@ export const AdminArea: React.FC = () => {
                 animate={{ opacity: 1 }}
                 className="space-y-6"
               >
-                <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-[#EADFD8]">
-                  <h3 className="font-extrabold text-base text-[#201A17]">Avaliações e feedbacks</h3>
-                  <span className="bg-[#2F9E69]/10 text-[#2F9E69] text-xs font-black px-3 py-1 rounded-full">
-                    Ativas: {feedbacks.length}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {feedbacks.map((f) => (
-                    <div key={f.id} className="bg-white p-5 rounded-2xl border border-[#EADFD8] shadow-sm space-y-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h4 className="font-extrabold text-sm text-[#201A17]">{f.customerName}</h4>
-                          <p className="text-[10px] text-[#756B66] font-semibold mt-0.5">Para: {f.establishmentName}</p>
-                        </div>
-
-                        {/* Stars */}
-                        <div className="flex gap-0.5 text-[#FFBE5C]">
-                          {Array.from({ length: 5 }).map((_, sIdx) => (
-                            <Star 
-                              key={sIdx} 
-                              className={`w-3.5 h-3.5 ${sIdx < f.rating ? 'fill-current' : 'text-gray-200'}`} 
-                            />
-                          ))}
-                        </div>
-                      </div>
-
-                      <p className="text-xs text-[#201A17] font-semibold leading-relaxed">
-                        “ {f.comment} ”
-                      </p>
-
-                      <div className="flex justify-between items-center pt-2.5 border-t border-[#F7F4EF] text-[10px] text-[#756B66] font-bold">
-                        <span>Data: {formatOrderDate(f.date)}</span>
-                        <span className="text-emerald-600">● APROVADA</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <AdminReviewsModeration />
               </motion.div>
             )}
 
@@ -3869,7 +3945,7 @@ export const AdminArea: React.FC = () => {
                   </div>
 
                   <div className="space-y-1.5 sm:col-span-2">
-                    <label className="text-[10px] font-black text-[#756B66] uppercase">Categorias Públicas do Cardápio (Exibição na Home)</label>
+                    <label className="text-[10px] font-black text-[#756B66] uppercase">Categorias Públicas do Catálogo (Exibição na Home)</label>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 p-4 rounded-xl border border-[#EADFD8] bg-[#FAF8F6] max-h-[250px] overflow-y-auto">
                       {PUBLIC_ESTABLISHMENT_CATEGORIES.map(cat => (
                         <label key={cat.id} className="flex items-center gap-2.5 text-xs font-bold text-[#756B66] cursor-pointer hover:text-[#201A17] hover:bg-[#E94F2F]/5 p-2 rounded-lg transition-all w-full select-none">
@@ -4156,7 +4232,7 @@ export const AdminArea: React.FC = () => {
                     type="submit"
                     className="flex-1 bg-[#201A17] hover:bg-[#E94F2F] text-[#FFBE5C] hover:text-white py-3 rounded-xl font-bold transition-all"
                   >
-                    Aprovar e Ativar Loja
+                    Aprovar e Ativar Estabelecimento
                   </button>
                 </div>
 
@@ -4197,7 +4273,7 @@ export const AdminArea: React.FC = () => {
                       </div>
                       <div className="text-white">
                         <h4 className="font-extrabold text-sm leading-tight">{viewingStore.name}</h4>
-                        <p className="text-[10px] text-white/80">{getCategoryLabel(viewingStore.category || viewingStore.categoryId)}</p>
+                        <p className="text-[10px] text-white/80">{getEstablishmentCardLabel(viewingStore.category || viewingStore.categoryId)}</p>
                       </div>
                     </div>
                   </div>
@@ -4430,7 +4506,7 @@ export const AdminArea: React.FC = () => {
                   </div>
 
                   <div className="space-y-1.5 sm:col-span-2">
-                    <label className="text-[10px] font-black text-[#756B66] uppercase">Categorias Públicas do Cardápio (Exibição na Home)</label>
+                    <label className="text-[10px] font-black text-[#756B66] uppercase">Categorias Públicas do Catálogo (Exibição na Home)</label>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 p-4 rounded-xl border border-[#EADFD8] bg-[#FAF8F6] max-h-[250px] overflow-y-auto">
                       {PUBLIC_ESTABLISHMENT_CATEGORIES.map(cat => (
                         <label key={cat.id} className="flex items-center gap-2.5 text-xs font-bold text-[#756B66] cursor-pointer hover:text-[#201A17] hover:bg-[#E94F2F]/5 p-2 rounded-lg transition-all w-full select-none">
@@ -4450,6 +4526,26 @@ export const AdminArea: React.FC = () => {
                         </label>
                       ))}
                     </div>
+                  </div>
+
+                  <div className="space-y-1.5 sm:col-span-2">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[10px] font-black text-[#756B66] uppercase">Sobre o estabelecimento</label>
+                      <span className="text-[10px] text-[#A39994] font-semibold">
+                        {editStoreAboutDescription.length}/800
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-[#756B66] font-medium leading-normal mb-1">
+                      Conte um pouco sobre a história, proposta ou diferenciais do estabelecimento. Este texto será exibido publicamente na aba “Informações”.
+                    </p>
+                    <textarea
+                      maxLength={800}
+                      rows={4}
+                      placeholder="Ex.: Somos uma empresa local especializada em produtos artesanais, atendimento próximo e entregas em toda a cidade."
+                      value={editStoreAboutDescription}
+                      onChange={(e) => setEditStoreAboutDescription(e.target.value)}
+                      className="w-full p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold resize-y text-xs leading-relaxed"
+                    />
                   </div>
                 </div>
 
@@ -4590,8 +4686,6 @@ export const AdminArea: React.FC = () => {
                       className="w-full p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold"
                     />
                   </div>
-
-
                 </div>
 
                 <div className="bg-[#F7F4EF]/50 p-4 rounded-2xl border border-[#EADFD8]/60 space-y-3">
@@ -4601,8 +4695,8 @@ export const AdminArea: React.FC = () => {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={editStoreEntregaPropria}
-                        onChange={(e) => setEditStoreEntregaPropria(e.target.checked)}
+                        checked={editStoreAcceptsDelivery === true}
+                        onChange={() => setEditStoreAcceptsDelivery(prev => !prev)}
                         className="rounded border-[#EADFD8] text-[#E94F2F] focus:ring-[#E94F2F]"
                       />
                       <span>Oferece Entrega em Domicílio</span>
@@ -4611,15 +4705,15 @@ export const AdminArea: React.FC = () => {
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={editStoreAtendeRetirada}
-                        onChange={(e) => setEditStoreAtendeRetirada(e.target.checked)}
+                        checked={editStoreAcceptsPickup === true}
+                        onChange={() => setEditStoreAcceptsPickup(prev => !prev)}
                         className="rounded border-[#EADFD8] text-[#E94F2F] focus:ring-[#E94F2F]"
                       />
                       <span>Permite Retirada Balcão</span>
                     </label>
                   </div>
 
-                  {editStoreEntregaPropria && (
+                  {editStoreAcceptsDelivery && (
                     <div className="space-y-1.5">
                       <label className="text-[9px] font-black text-[#756B66] uppercase">Bairros Atendidos (separados por vírgula)</label>
                       <input
@@ -4916,7 +5010,7 @@ export const AdminArea: React.FC = () => {
                       const finalFee = zone.deliveryFee !== null && zone.deliveryFee !== undefined ? zone.deliveryFee : Number(defaultDeliveryFee || 0);
                       const additionalMinutes = zone.additionalEstimatedMinutes !== null && zone.additionalEstimatedMinutes !== undefined ? zone.additionalEstimatedMinutes : Number(defaultAdditionalMinutes || 0);
                       const finalMinOrder = zone.minimumOrderValue !== null && zone.minimumOrderValue !== undefined ? zone.minimumOrderValue : Number(defaultMinOrder || 0);
-                      const totalEstimatedMinutes = (editingStore.baseEstimatedMinutes || 30) + additionalMinutes;
+                      const totalEstimatedMinutes = ((editingStore.baseEstimatedMinutes !== undefined && editingStore.baseEstimatedMinutes !== null) ? Number(editingStore.baseEstimatedMinutes) : 30) + additionalMinutes;
 
                       return (
                         <div key={zone.neighborhoodId} className="p-3 bg-gray-50 rounded-xl border border-[#EADFD8] flex items-center justify-between">
@@ -5175,7 +5269,7 @@ export const AdminArea: React.FC = () => {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#FCFBF9] rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-[#EADFD8]"
+              className="bg-[#FCFBF9] rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-[#EADFD8] relative"
             >
               <div className="p-5 border-b border-[#EADFD8] flex justify-between items-center bg-[#F7F4EF]">
                 <div>
@@ -5321,7 +5415,7 @@ export const AdminArea: React.FC = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={handleUnlinkOwner}
+                          onClick={() => setShowUnlinkConfirmation(true)}
                           disabled={isSubmittingStore}
                           className="p-2.5 rounded-xl border border-rose-200 bg-white hover:bg-rose-50 text-rose-800 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-colors"
                         >
@@ -5494,24 +5588,113 @@ export const AdminArea: React.FC = () => {
                 ) : (
                   /* 4. CHOOSE ACCESSIBILITY FOR EMPTY OWNER LINKAGE */
                   <div className="space-y-4">
-                    <div className="bg-[#F7F4EF] p-1 rounded-xl border border-[#EADFD8] flex">
-                      <button
-                        type="button"
-                        onClick={() => setOwnerModalTab('create')}
-                        className={`flex-1 py-2 text-[10px] font-black rounded-lg transition-all ${ownerModalTab === 'create' ? 'bg-[#E94F2F] text-white shadow-xs' : 'text-[#756B66] hover:text-[#201A17]'}`}
-                      >
-                        Criar Novo Acesso
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setOwnerModalTab('link_existing')}
-                        className={`flex-1 py-2 text-[10px] font-black rounded-lg transition-all ${ownerModalTab === 'link_existing' ? 'bg-[#E94F2F] text-white shadow-xs' : 'text-[#756B66] hover:text-[#201A17]'}`}
-                      >
-                        Vincular Usuário Existente
-                      </button>
-                    </div>
+                    {emptyOwnerState === 'info' ? (
+                      <div className="space-y-4 py-6 text-center">
+                        <div className="w-12 h-12 bg-amber-50 border border-amber-200 text-amber-600 rounded-full flex items-center justify-center mx-auto mb-2">
+                          <UserX className="w-6 h-6" />
+                        </div>
+                        <div>
+                          <h4 className="font-black text-sm text-[#201A17] uppercase tracking-wider">SEM PROPRIETÁRIO VINCULADO</h4>
+                          <p className="text-[#544B45] text-[11px] leading-relaxed mt-1 max-w-xs mx-auto">
+                            O {linkingUserStore.name} ainda não possui um responsável com acesso ao painel.
+                          </p>
+                        </div>
 
-                    {ownerModalTab === 'create' ? (
+                        <div className="space-y-2 pt-2 max-w-xs mx-auto">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEmptyOwnerState('invite');
+                              setOwnerModalTab('invite');
+                            }}
+                            className="w-full py-2.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-50 text-amber-900 font-bold text-[11px] flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 text-amber-600" />
+                            Gerar Novo Convite
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEmptyOwnerState('create');
+                              setOwnerModalTab('create');
+                            }}
+                            className="w-full py-2.5 rounded-xl border border-[#EADFD8] bg-white hover:bg-[#F7F4EF] text-[#201A17] font-bold text-[11px] flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+                          >
+                            <Plus className="w-3.5 h-3.5 text-orange-600" />
+                            Criar Novo Acesso
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEmptyOwnerState('link_existing');
+                              setOwnerModalTab('link_existing');
+                            }}
+                            className="w-full py-2.5 rounded-xl border border-[#EADFD8] bg-white hover:bg-[#F7F4EF] text-[#201A17] font-bold text-[11px] flex items-center justify-center gap-1.5 transition-colors shadow-xs"
+                          >
+                            <Link2 className="w-3.5 h-3.5 text-blue-600" />
+                            Vincular Usuário Existente
+                          </button>
+                        </div>
+                      </div>
+                    ) : emptyOwnerState === 'invite' ? (
+                      <form onSubmit={(e) => handleLinkOwnerSubmit(e, false, false)} className="space-y-3">
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-black text-[#756B66] uppercase">Nome do Proprietário/Responsável *</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="Nome completo do parceiro"
+                            value={createOwnerName}
+                            onChange={(e) => setCreateOwnerName(e.target.value)}
+                            className="w-full p-2.5 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-black text-[#756B66] uppercase">E-mail Comercial (Acesso) *</label>
+                          <input
+                            type="email"
+                            required
+                            placeholder="exemplo@gmail.com"
+                            value={createOwnerEmail}
+                            onChange={(e) => setCreateOwnerEmail(e.target.value)}
+                            className="w-full p-2.5 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] font-black text-[#756B66] uppercase">WhatsApp / Telefone</label>
+                          <input
+                            type="tel"
+                            placeholder="(31) 99999-9999"
+                            value={createOwnerPhone}
+                            onChange={(e) => setCreateOwnerPhone(e.target.value)}
+                            className="w-full p-2.5 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-bold"
+                          />
+                        </div>
+
+                        <div className="p-3 bg-[#F7F4EF] rounded-xl text-[10px] leading-relaxed text-[#756B66]">
+                          O sistema irá criar um convite que permitirá ao novo proprietário cadastrar sua própria senha de acesso de forma segura.
+                        </div>
+
+                        <div className="flex gap-3 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setEmptyOwnerState('info')}
+                            className="flex-1 bg-[#F7F4EF] hover:bg-gray-100 text-[#756B66] border border-[#EADFD8] py-3 rounded-xl font-bold transition-colors"
+                          >
+                            Voltar
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={isSubmittingStore}
+                            className="flex-1 bg-[#E94F2F] hover:bg-[#BD351C] text-white py-3 rounded-xl font-bold transition-colors shadow-xs"
+                          >
+                            {isSubmittingStore ? 'Gerando...' : 'Gerar e Enviar Convite'}
+                          </button>
+                        </div>
+                      </form>
+                    ) : emptyOwnerState === 'create' ? (
                       <form onSubmit={(e) => handleLinkOwnerSubmit(e, false, false)} className="space-y-3">
                         <div className="space-y-1">
                           <label className="text-[9px] font-black text-[#756B66] uppercase">Nome do Proprietário/Responsável *</label>
@@ -5601,10 +5784,10 @@ export const AdminArea: React.FC = () => {
                         <div className="flex gap-3 pt-2">
                           <button
                             type="button"
-                            onClick={handleCloseOwnerModal}
+                            onClick={() => setEmptyOwnerState('info')}
                             className="flex-1 bg-[#F7F4EF] hover:bg-gray-100 text-[#756B66] border border-[#EADFD8] py-3 rounded-xl font-bold transition-colors"
                           >
-                            Cancelar
+                            Voltar
                           </button>
                           <button
                             type="submit"
@@ -5665,10 +5848,10 @@ export const AdminArea: React.FC = () => {
                         <div className="flex gap-3 pt-2 border-t border-[#EADFD8] mt-4">
                           <button
                             type="button"
-                            onClick={handleCloseOwnerModal}
+                            onClick={() => setEmptyOwnerState('info')}
                             className="flex-1 bg-[#F7F4EF] hover:bg-gray-100 text-[#756B66] border border-[#EADFD8] py-3 rounded-xl font-bold transition-colors"
                           >
-                            Cancelar
+                            Voltar
                           </button>
                           <button
                             type="button"
@@ -5684,6 +5867,42 @@ export const AdminArea: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* Custom Unlinking Confirmation Overlay Modal */}
+              {showUnlinkConfirmation && (
+                <div className="absolute inset-0 bg-[#201A17]/75 backdrop-blur-xs flex items-center justify-center p-4 z-50 rounded-3xl animate-fade-in">
+                  <div className="bg-[#FCFBF9] rounded-2xl p-6 max-w-sm w-full border border-[#EADFD8] shadow-2xl space-y-4 text-xs font-semibold text-[#201A17]">
+                    <div>
+                      <h4 className="font-black text-sm text-[#201A17] uppercase tracking-wider">Desvincular proprietário?</h4>
+                      <p className="text-[#544B45] leading-relaxed mt-2 text-[11px]">
+                        <strong>{linkingUserStore.ownerName || linkingUserStore.owner || 'Rui Costa'}</strong> perderá o acesso de proprietário ao <strong>{linkingUserStore.name}</strong>. A conta do usuário e todos os dados do estabelecimento serão preservados.
+                      </p>
+                      <p className="text-[#756B66] text-[10px] bg-amber-50/50 p-2.5 rounded-xl border border-amber-200/60 leading-relaxed mt-3 font-medium">
+                        Após o desvínculo, será necessário gerar um novo convite ou vincular outro usuário para administrar o estabelecimento.
+                      </p>
+                    </div>
+
+                    <div className="flex gap-3 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowUnlinkConfirmation(false)}
+                        disabled={isSubmittingStore}
+                        className="flex-1 bg-[#F7F4EF] hover:bg-gray-100 text-[#756B66] border border-[#EADFD8] py-2.5 rounded-xl font-bold transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleUnlinkOwner}
+                        disabled={isSubmittingStore}
+                        className="flex-1 bg-[#E94F2F] hover:bg-[#BD351C] text-white py-2.5 rounded-xl font-bold transition-colors shadow-xs disabled:opacity-50"
+                      >
+                        {isSubmittingStore ? 'Desvinculando...' : 'Desvincular proprietário'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </motion.div>
           </div>
         )}

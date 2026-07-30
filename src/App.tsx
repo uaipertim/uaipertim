@@ -7,6 +7,7 @@ import { useAuth } from './hooks/useAuth';
 import { useLocation } from './hooks/useLocation';
 import { Header } from './components/Header';
 import { MobileFixedCartBar } from './components/MobileFixedCartBar';
+import { MobileBottomNavigation } from './components/MobileBottomNavigation';
 import { ClientArea } from './components/ClientArea';
 import { EstablishmentArea } from './components/EstablishmentArea';
 import { AdminArea } from './components/AdminArea';
@@ -18,6 +19,7 @@ import { MyAccount } from './components/MyAccount';
 import { OrderTrackingPage } from './components/account/OrderTrackingPage';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { orderService } from './services/orderService';
+import { enableMobileBottomNavigation } from './config';
 
 import { AnimatePresence } from 'motion/react';
 import { AppSplashScreen } from './components/layout/AppSplashScreen';
@@ -42,6 +44,49 @@ function AppContent() {
   const isMerchantArea = path === '/gestor' || path === '/loja/pedidos';
   const isAdminArea = path === '/admin' || path === '/admin/migracao-catalogo';
   const showMobileCartBar = !isMerchantArea && !isAdminArea && cart.length > 0;
+
+  // Modal tracking state for bottom navigation visibility
+  const [isCheckoutOpen, setIsCheckoutOpen] = React.useState(false);
+  const [isFullScreenModalOpen, setIsFullScreenModalOpen] = React.useState(false);
+  const [isCartOpen, setIsCartOpen] = React.useState(false);
+  const [isReviewModalOpen, setIsReviewModalOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    const checkModals = () => {
+      const checkout = document.getElementById('checkout-modal') || document.getElementById('auth-required-checkout-modal');
+      setIsCheckoutOpen(!!checkout);
+
+      const productModal = document.getElementById('product-config-modal');
+      const allCategoriesModal = document.getElementById('all-categories-modal');
+      const citySelectorModal = document.getElementById('city-selector-modal');
+      setIsFullScreenModalOpen(!!(productModal || allCategoriesModal || citySelectorModal));
+
+      const cartDrawer = document.getElementById('cart-drawer-overlay');
+      setIsCartOpen(!!cartDrawer);
+
+      const reviewModal = document.getElementById('review-modal');
+      setIsReviewModalOpen(!!reviewModal);
+    };
+
+    const observer = new MutationObserver(checkModals);
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    checkModals();
+
+    return () => observer.disconnect();
+  }, []);
+
+  const isBottomNavVisible = enableMobileBottomNavigation && !isMerchantArea && !isAdminArea && !isCheckoutOpen && !isFullScreenModalOpen && !isCartOpen && !isReviewModalOpen;
+
+  // Dynamic padding-bottom for the main container
+  let mainPaddingBottomStyle: React.CSSProperties | undefined = undefined;
+  if (isBottomNavVisible && showMobileCartBar) {
+    mainPaddingBottomStyle = { paddingBottom: 'calc(64px + 76px + env(safe-area-inset-bottom, 0px) + 16px)' };
+  } else if (isBottomNavVisible) {
+    mainPaddingBottomStyle = { paddingBottom: 'calc(64px + env(safe-area-inset-bottom, 0px) + 16px)' };
+  } else if (showMobileCartBar) {
+    mainPaddingBottomStyle = { paddingBottom: 'calc(76px + env(safe-area-inset-bottom, 0px) + 16px)' };
+  }
 
   // 1. PUSH INTENT CONTROLLER
   const [pendingPushNavigation, setPendingPushNavigation] = React.useState<PendingPushNavigation | null>(() => {
@@ -516,7 +561,7 @@ function AppContent() {
     <div className="bg-[#F7F4EF] min-h-screen font-sans flex flex-col">
       <Header />
       {showMobileCartBar && <MobileFixedCartBar />}
-      <main className={`flex-1 ${showMobileCartBar ? 'pb-24 md:pb-0' : ''}`}>
+      <main className="flex-1" style={mainPaddingBottomStyle}>
         {path === '/login' && <Login />}
         {path === '/cadastro' && <Cadastro />}
         
@@ -564,6 +609,7 @@ function AppContent() {
           </>
         )}
       </main>
+      <MobileBottomNavigation isCheckoutOpen={isCheckoutOpen} isFullScreenModalOpen={isFullScreenModalOpen} isCartOpen={isCartOpen} isReviewModalOpen={isReviewModalOpen} />
       <AppFooter showMobileCartBar={showMobileCartBar} />
       <ToastContainer />
 

@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { useLocation } from '../../hooks/useLocation';
 import { useAuth } from '../../hooks/useAuth';
-import { Bike, ArrowLeft, Calendar, MapPin, ShoppingBag, Loader2, MessageSquare } from 'lucide-react';
+import { Bike, ArrowLeft, Calendar, MapPin, ShoppingBag, Loader2, MessageSquare, Star } from 'lucide-react';
 import { normalizeOrderItem } from '../../utils/orderCalculation';
+import { ReviewModal } from './ReviewModal';
 import { OrderStatusTracker } from '../OrderStatusTracker';
 import { PremiumOrderChat } from '../order-chat/PremiumOrderChat';
 import { formatOrderDateTime } from '../../utils/dateUtils';
@@ -16,6 +17,7 @@ export const OrderTrackingPage: React.FC = () => {
   const [path, navigate] = useLocation();
   const [chatOpen, setChatOpen] = useState(false);
   const [localOrder, setLocalOrder] = useState<Order | null>(null);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [localLoading, setLocalLoading] = useState(true);
 
   // Extract orderId from path /acompanhar-pedido/:orderId
@@ -38,6 +40,13 @@ export const OrderTrackingPage: React.FC = () => {
   }, [orderId]);
 
   const order = globalOrder || localOrder;
+
+  // Automatically mark status updates as seen when viewing the order tracking page
+  useEffect(() => {
+    if (order && currentUser && order.customerId === currentUser.uid && order.hasUnreadCustomerUpdate === true) {
+      orderService.markOrderUpdateAsSeen(order.id, currentUser.uid, order.status);
+    }
+  }, [order, currentUser]);
 
   const [searchParams, setSearchParams] = useState(() => new URLSearchParams(typeof window !== 'undefined' ? window.location.search : ''));
   const [highlightMessageId, setHighlightMessageId] = useState<string | undefined>(undefined);
@@ -200,6 +209,71 @@ export const OrderTrackingPage: React.FC = () => {
         {/* Real-time Status Tracker (Columns 1 and 2) */}
         <div className="lg:col-span-2 space-y-6">
           <OrderStatusTracker order={order} />
+
+          {/* Evaluation Card for Concluded Orders */}
+          {order.status === 'concluido' && (
+            <div className="bg-white rounded-3xl border border-[#EADFD8] shadow-sm p-6 space-y-4">
+              <div className="flex items-start gap-4">
+                <div className="p-3 bg-amber-50 rounded-2xl text-amber-500 border border-amber-100">
+                  <Star className="w-6 h-6 fill-amber-400 text-amber-400" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-extrabold text-[#201A17] text-base">
+                    Como foi sua experiência?
+                  </h3>
+                  <p className="text-xs text-[#756B66] font-semibold">
+                    Avalie seu pedido na {order.establishmentName}.
+                  </p>
+                </div>
+              </div>
+              
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-[#F7F4EF]">
+                <div className="text-xs font-bold text-[#756B66]">
+                  {order.reviewSubmitted ? (
+                    <span className="text-[#2F9E69] flex items-center gap-1">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#2F9E69]"></span>
+                      Avaliado com sucesso
+                    </span>
+                  ) : (
+                    <span className="text-amber-600 flex items-center gap-1">
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+                      Avaliação pendente
+                    </span>
+                  )}
+                </div>
+                
+                <button
+                  onClick={() => setReviewModalOpen(true)}
+                  className={`px-5 py-3 rounded-xl font-black text-xs transition-all active:scale-95 cursor-pointer border ${
+                    order.reviewSubmitted
+                      ? 'bg-white border-[#EADFD8] text-[#5C534E] hover:bg-[#F7F4EF]'
+                      : 'bg-[#E94F2F] border-transparent text-white hover:bg-[#BD351C]'
+                  }`}
+                >
+                  {order.reviewSubmitted ? 'Ver / Editar Avaliação' : 'Avaliar pedido'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {reviewModalOpen && currentUser && (
+            <ReviewModal
+              orderId={order.id}
+              establishmentId={order.establishmentId}
+              establishmentName={order.establishmentName}
+              customerUid={currentUser.uid}
+              customerName={currentUser.displayName || order.customerName || 'Cliente'}
+              onClose={() => setReviewModalOpen(false)}
+              onSuccess={() => {
+                if (localOrder) {
+                  setLocalOrder({
+                    ...localOrder,
+                    reviewSubmitted: true
+                  });
+                }
+              }}
+            />
+          )}
 
           {/* Visual Diagnostic Panel for Admin/Development */}
           {order.pushDiagnostic && canViewPushDiagnostics && (

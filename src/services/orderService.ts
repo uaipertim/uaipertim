@@ -12,7 +12,8 @@ import {
   serverTimestamp,
   DocumentSnapshot,
   runTransaction,
-  Timestamp
+  Timestamp,
+  writeBatch
 } from "firebase/firestore";
 import { db, auth } from "../lib/firebase";
 import { Order, OrderStatus } from "../types";
@@ -144,6 +145,8 @@ function mapFirestoreDocToOrder(docSnap: DocumentSnapshot): Order {
     notes: data.notes || "",
     establishmentId: data.establishmentId || "",
     establishmentName: data.establishmentName || "",
+    establishmentImage: data.establishmentImage || "",
+    establishmentCity: data.establishmentCity || "",
     cityId: data.cityId || "",
     cityName: data.cityName || "",
     state: data.state || "",
@@ -155,7 +158,10 @@ function mapFirestoreDocToOrder(docSnap: DocumentSnapshot): Order {
     chatLastSenderRole: data.chatLastSenderRole || null,
     chatUnreadCustomer: Number(data.chatUnreadCustomer ?? 0),
     chatUnreadMerchant: Number(data.chatUnreadMerchant ?? 0),
-    chatMessageCount: Number(data.chatMessageCount ?? 0)
+    chatMessageCount: Number(data.chatMessageCount ?? 0),
+    hasUnreadCustomerUpdate: data.hasUnreadCustomerUpdate !== undefined ? !!data.hasUnreadCustomerUpdate : false,
+    customerLastSeenStatus: data.customerLastSeenStatus || "",
+    customerLastViewedAt: data.customerLastViewedAt || null
   } as Order;
 }
 
@@ -354,7 +360,7 @@ export const orderService = {
       });
       callback(orders);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, "orders");
+      handleFirestoreError(error, OperationType.LIST, "orders");
     });
   },
 
@@ -382,7 +388,7 @@ export const orderService = {
       });
       callback(orders);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, "orders");
+      handleFirestoreError(error, OperationType.LIST, "orders");
     });
   },
 
@@ -493,10 +499,10 @@ export const orderService = {
           });
           callback(applyClientSideFilters(allOrders));
         }, (err) => {
-          handleFirestoreError(err, OperationType.GET, "orders");
+          handleFirestoreError(err, OperationType.LIST, "orders");
         });
       } else {
-        handleFirestoreError(error, OperationType.GET, "orders");
+        handleFirestoreError(error, OperationType.LIST, "orders");
       }
     });
   },
@@ -578,6 +584,7 @@ export const orderService = {
         const updateFields: any = {
           status: nextCanonicalStatus,
           updatedAt: serverTimestamp(),
+          hasUnreadCustomerUpdate: changedByRole !== 'customer',
           statusHistory: [
             ...(data.statusHistory || []),
             {
@@ -649,6 +656,60 @@ export const orderService = {
       });
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, `orders/${orderId}`);
+    }
+  },
+
+  /**
+   * Mark a customer order's status update as seen/read.
+   */
+  async markOrderUpdateAsSeen(orderId: string, customerId: string, status: string): Promise<void> {
+    if (!db || !orderId || !customerId) return;
+    try {
+      const docRef = doc(db, "orders", orderId);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const orderData = docSnap.data();
+        if (orderData.customerId === customerId) {
+          await updateDoc(docRef, {
+            customerLastSeenStatus: status,
+            customerLastViewedAt: serverTimestamp(),
+            hasUnreadCustomerUpdate: false,
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Error marking order update as seen:", error);
+    }
+  },
+
+  /**
+   * Mark all unread order updates as seen/read for a customer in batch.
+   */
+  async markAllCustomerOrderUpdatesAsSeen(customerId: string, orders: Order[]): Promise<void> {
+    if (!db || !customerId || !orders || orders.length === 0) return;
+    try {
+      const writeBatchInstance = writeBatch(db);
+      let hasUpdates = false;
+
+      for (const order of orders) {
+        if (order.customerId === customerId && order.hasUnreadCustomerUpdate === true) {
+          const docRef = doc(db, "orders", order.id);
+          writeBatchInstance.update(docRef, {
+            customerLastSeenStatus: order.status,
+            customerLastViewedAt: serverTimestamp(),
+            hasUnreadCustomerUpdate: false,
+            updatedAt: serverTimestamp()
+          });
+          hasUpdates = true;
+        }
+      }
+
+      if (hasUpdates) {
+        await writeBatchInstance.commit();
+      }
+    } catch (error) {
+      console.error("Error marking all customer order updates as seen in batch:", error);
     }
   }
 };

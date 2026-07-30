@@ -1,0 +1,337 @@
+=== ESTABLISHMENTS ===
+ID: burger-17
+Name: Burger 17
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: burger-do-gloria
+Name: Burger do Glória
+Owner UID: rKc6A6DZelSjj8NM1sGMepfBl1c2
+Owner Name: Márcio
+Owner Email: bgloria@uaipertim.com.br
+Merchant UID: rKc6A6DZelSjj8NM1sGMepfBl1c2
+Merchant Owner UID: rKc6A6DZelSjj8NM1sGMepfBl1c2
+---
+ID: est-1784164686974
+Name: Açaí do Glória
+Owner UID: GhtLopDTNAhV2ThwpEINd3BULAw2
+Owner Name: Marco Paulo
+Owner Email: marcospaulo@uaipertim.com.br
+Merchant UID: GhtLopDTNAhV2ThwpEINd3BULAw2
+Merchant Owner UID: GhtLopDTNAhV2ThwpEINd3BULAw2
+---
+ID: est-1784206234036
+Name: Mercearia Zé Bernardo
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: est-1784207437872
+Name: Loja Teste
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: est-1784213577192
+Name: Padaria do Centro
+Owner UID: ZzIq33bGFnRjqOfaGxpprUwMVxY2
+Owner Name: Manoel Alves
+Owner Email: padariadocentro@uaipertim.com.br
+Merchant UID: ZzIq33bGFnRjqOfaGxpprUwMVxY2
+Merchant Owner UID: ZzIq33bGFnRjqOfaGxpprUwMVxY2
+---
+ID: est-1784295127043
+Name: Padaria da Esquina
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: est-1784311352640
+Name: Farmácia Magazine
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: mercado-central-do-gloria
+Name: Mercado Central do Glória
+Owner UID: rU3S1ewNgzdmt4HDFl7Ry1PxJv52
+Owner Name: Monica Matos
+Owner Email: mercadocentral@uaipertim.com.br
+Merchant UID: rU3S1ewNgzdmt4HDFl7Ry1PxJv52
+Merchant Owner UID: rU3S1ewNgzdmt4HDFl7Ry1PxJv52
+---
+ID: mercado-passos
+Name: Mercado Passos
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: mineirinho-4465
+Name: Mineirinho
+Owner UID: 5cq6Gp7MUcRe0XJ0vAl7R9lqlM93
+Owner Name: Marco
+Owner Email: marcos@uaipertim.com.br
+Merchant UID: 5cq6Gp7MUcRe0XJ0vAl7R9lqlM93
+Merchant Owner UID: 5cq6Gp7MUcRe0XJ0vAl7R9lqlM93
+---
+ID: pizzaria-avenida
+Name: Pizzaria Avenida
+Owner UID: null
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: null
+Merchant Owner UID: null
+---
+ID: pizzaria-da-praca
+Name: Pizzaria da Praça
+Owner UID: RnHWkvbDYQfGpx2Qs2SYHLnB5vz2
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: RnHWkvbDYQfGpx2Qs2SYHLnB5vz2
+Merchant Owner UID: RnHWkvbDYQfGpx2Qs2SYHLnB5vz2
+---
+ID: sabor-mineiro
+Name: Sabor Mineiro
+Owner UID: bIF0kbYL03hXI1AH8IVoL8CM09h1
+Owner Name: Rozane Costa
+Owner Email: sabormineiro@uiapertim.com.br
+Merchant UID: bIF0kbYL03hXI1AH8IVoL8CM09h1
+Merchant Owner UID: bIF0kbYL03hXI1AH8IVoL8CM09h1
+---
+ID: sushi-nori
+Name: Sushi Nori
+Owner UID: A0GxwKTmUcdHCLX2itlfV96nXk73
+Owner Name: Vereador do Glória
+Owner Email: sushi@uaipertim.com.br
+Merchant UID: A0GxwKTmUcdHCLX2itlfV96nXk73
+Merchant Owner UID: A0GxwKTmUcdHCLX2itlfV96nXk73
+---
+ID: test-server-establishment
+Name: Test Server Establishment
+Owner UID: undefined
+Owner Name: undefined
+Owner Email: undefined
+Merchant UID: undefined
+Merchant Owner UID: undefined
+---
+ID: uaipet-gloria-2033
+Name: UaiPet Glória
+Owner UID: obnjkGuaLtOuIeLReeITuwAaenF3
+Owner Name: Mariana Candido
+Owner Email: uaipet@uaipertim.com.br
+Merchant UID: obnjkGuaLtOuIeLReeITuwAaenF3
+Merchant Owner UID: obnjkGuaLtOuIeLReeITuwAaenF3
+---
+=== USERS IN FIRESTORE ===
+UID: 0kir9iv7Lfgec0icVeey91lLXrI2
+Name: Diogo
+Email: diogo@terra.com.br
+Role: customer
+Establishment ID: null
+---
+UID: 4VAHYyjGLjhO1TNexukfG7QVwHN2
+Name: Cliente Demonstração
+Email: willian@viajandocomigo.com.br
+
+Role: customer
+Establishment ID: null
+---
+UID: 5cq6Gp7MUcRe0XJ0vAl7R9lqlM93
+Name: Marco
+Email: marcos@uaipertim.com.br
+Role: merchant
+Establishment ID: mineirinho-4465
+---
+UID: 9qfeTH2nF5dx4CNhHpBjzHQ6pPJ2
+Name: Dra Filó
+Email: filo@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: A0GxwKTmUcdHCLX2itlfV96nXk73
+Name: Vereador do Glória
+Email: sushi@uaipertim.com.br
+Role: merchant
+Establishment ID: sushi-nori
+---
+UID: B1OFQRhlIXg3VLrAgBKWKoptXTH2
+Name: Willian
+Email: drive@viajandocomigo.com.br
+Role: admin
+Establishment ID: null
+---
+UID: D9VxJoy2HRgCvHjExqeXVmBitan1
+Name: Amaro Silva
+Email: amaro@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: EYwnqBYEnYX2xErqbMJJK2vZngB3
+Name: Melissa Lopes
+Email: melzinha@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: GhtLopDTNAhV2ThwpEINd3BULAw2
+Name: Marco Paulo
+Email: marcospaulo@uaipertim.com.br
+Role: merchant
+Establishment ID: est-1784164686974
+---
+UID: JDMzYzaEcHTETQB7iSafpI8BHGG2
+Name: Maria
+Email: burger2@uaipertim.com.br
+Role: customer
+Establishment ID: null
+---
+UID: JzbrZeLN0bR1CDYJ3Ejwa0Z3pYI2
+Name: undefined
+Email: backend-system-user@viajandocomigo.com.br
+Role: admin
+Establishment ID: undefined
+---
+UID: MGg7gZ2U2wQ2vs1XxXPw6pnEcKu2
+Name: Manoel Filho
+Email: manoel@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: N0rTKsGdbCPZKMKC98LlqFNWMKa2
+Name: Mariah Eduarda
+Email: mariah@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: PuPF7eFhRcVj4h6r0QBo8MTlnxq2
+Name: Kylian Mbappé
+Email: kyli@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: Rfx9vbDu4SYpMXPJoBZ0pzG9LCO2
+Name: Hamburgueiro
+Email: burgerdogloria@uaipertim.com.br
+Role: customer
+Establishment ID: null
+---
+UID: RnHWkvbDYQfGpx2Qs2SYHLnB5vz2
+Name: Responsável Pizzaria da Praça
+Email: atendimento@viajandocomigo.com.br 
+Role: merchant
+Establishment ID: pizzaria-da-praca
+---
+UID: VBxdZid4mdXNvxxWxzK3xr70XDi1
+Name: João Gomes
+Email: joao@terra.com.br
+Role: customer
+Establishment ID: null
+---
+UID: WRAXxxgsQxRrMm0CWshjJ0QD2jn1
+Name: Kaue
+Email: kaue@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: XelkYKgNwZVKx1vzkiQJTQ4YHYN2
+Name: Mariana Lopes
+Email: mariana@uaipertim.com.br
+Role: customer
+Establishment ID: null
+---
+UID: ZzIq33bGFnRjqOfaGxpprUwMVxY2
+Name: Manoel Alves
+Email: padariadocentro@uaipertim.com.br
+Role: merchant
+Establishment ID: est-1784213577192
+---
+UID: aONvR1y6T5UhumZmuf5EHDAdBLl1
+Name: Melissa Lopes
+Email: melissa@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---
+UID: bIF0kbYL03hXI1AH8IVoL8CM09h1
+Name: Rozane Costa
+Email: sabormineiro@uiapertim.com.br
+Role: merchant
+Establishment ID: sabor-mineiro
+---
+UID: da3dpN7CXRSlPcd3EdiRC5ZITjz1
+Name: Camila Prado
+Email: camilaqueizor@terra.com.br
+Role: customer
+Establishment ID: null
+---
+UID: gIWI6udHi0avqR31k5Vl7OBBCTi1
+Name: Saci
+Email: saci@terra.com.br
+Role: customer
+Establishment ID: null
+---
+UID: gKm2EiL3PINMfbZY4Nlect4nWog1
+Name: Dani
+Email: petshop@uaipertim.com.br
+Role: customer
+Establishment ID: null
+---
+UID: grVFXebvOzfEKMwKhYj4TORYksu1
+Name: ANDERSON DE SOUZA GUIMARAES
+Email: andersonshakur157@gmail.com
+Role: customer
+Establishment ID: null
+---
+UID: obnjkGuaLtOuIeLReeITuwAaenF3
+Name: Mariana Candido
+Email: uaipet@uaipertim.com.br
+Role: merchant
+Establishment ID: uaipet-gloria-2033
+---
+UID: p1NqbkOV6KNrTY9iBK25Q7wDbpo1
+Name: melissa lopes
+Email: melly011118@gmail.com
+Role: customer
+Establishment ID: null
+---
+UID: rKc6A6DZelSjj8NM1sGMepfBl1c2
+Name: Márcio
+Email: bgloria@uaipertim.com.br
+Role: merchant
+Establishment ID: burger-do-gloria
+---
+UID: rU3S1ewNgzdmt4HDFl7Ry1PxJv52
+Name: Monica Matos
+Email: mercadocentral@uaipertim.com.br
+Role: merchant
+Establishment ID: mercado-central-do-gloria
+---
+UID: sityr4Rb9OUiJ5jlstDvhSexhwV2
+Name: mariah
+Email: mariahdudah3000@gmail.con
+Role: customer
+Establishment ID: null
+---
+UID: xem3wp5Jl1QBPPxAENS83UjbA5k1
+Name: Marcelo Baptista
+Email: marcelo@terra.com.br
+Role: customer
+Establishment ID: null
+---
+UID: yh3TeurI2eNj2NtmvoGvAShhNkr2
+Name: Mel Lopes
+Email: mel@viajandocomigo.com.br
+Role: customer
+Establishment ID: null
+---

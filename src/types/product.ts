@@ -15,4 +15,12 @@ export interface Product {
   establishmentId?: string;
   menuCategoryId?: string;
   menuCategoryName?: string;
+  promotionalPrice?: number | null;
+  promotionEnabled?: boolean;
+  promotionSource?: 'establishment' | 'uaipertim' | null;
+  promotionLabel?: string | null;
+  promotionStartsAt?: any;
+  promotionEndsAt?: any;
+  preparedToOrder?: boolean;
+  freshIngredients?: boolean;
 }

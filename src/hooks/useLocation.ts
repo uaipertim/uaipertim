@@ -18,11 +18,11 @@ if (typeof window !== 'undefined') {
 }
 
 export function useLocation() {
-  const [path, setPath] = useState(window.location.pathname);
+  const [url, setUrl] = useState(() => window.location.pathname + window.location.search);
 
   useEffect(() => {
     const handleLocationChange = () => {
-      setPath(window.location.pathname);
+      setUrl(window.location.pathname + window.location.search);
     };
 
     window.addEventListener('popstate', handleLocationChange);
@@ -38,5 +38,7 @@ export function useLocation() {
     window.history.pushState({}, '', to);
   };
 
-  return [path, navigate] as const;
+  const pathname = url.split('?')[0];
+
+  return [pathname, navigate] as const;
 }

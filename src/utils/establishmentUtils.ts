@@ -1,38 +1,134 @@
 import { Establishment } from '../types';
 
-/**
- * Checks if an establishment can receive orders based on its current status.
- *
- * Requirements:
- * - active === true (registered and visible on the platform)
- * - open === true (open at this moment)
- * - acceptingOrders === true (accepting new orders)
- * - temporarilyPaused !== true (not temporarily paused)
- * - suspended !== true (not administratively suspended)
- */
-export function canEstablishmentReceiveOrders(establishment: any): boolean {
+export interface EstablishmentOperationalState {
+  storeStatus: "open" | "closed";
+  ordersStatus: "accepting" | "paused" | "unavailable";
+  pauseStatus: "inactive" | "active";
+  pauseEndsAt: Date | null;
+  canReceiveOrders: boolean;
+  reason: string | null;
+}
+
+export function parseDate(val: any): Date | null {
+  if (!val) return null;
+  if (typeof val.toDate === 'function') return val.toDate();
+  if (val instanceof Date) return val;
+  if (typeof val === 'string' || typeof val === 'number') {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof val === 'object' && val.seconds !== undefined) {
+    return new Date(val.seconds * 1000);
+  }
+  if (typeof val === 'object' && val._seconds !== undefined) {
+    return new Date(val._seconds * 1000);
+  }
+  return null;
+}
+
+export function isPauseActive(establishment: any, currentDate: Date = new Date()): boolean {
   if (!establishment) return false;
+  if (establishment.temporarilyPaused !== true) return false;
+  if (establishment.pausedUntil) {
+    const until = parseDate(establishment.pausedUntil);
+    if (until) {
+      return currentDate < until;
+    }
+  }
+  return true; // Sem data definida significa pausa por tempo indeterminado
+}
 
-  // active is required to be explicitly true
-  const active = establishment.active === true;
+export function getEstablishmentOperationalState(
+  establishment: any,
+  currentDate: Date = new Date()
+): EstablishmentOperationalState {
+  if (!establishment) {
+    return {
+      storeStatus: "closed",
+      ordersStatus: "unavailable",
+      pauseStatus: "inactive",
+      pauseEndsAt: null,
+      canReceiveOrders: false,
+      reason: "No establishment provided"
+    };
+  }
 
-  // open is required to be explicitly true. If open is undefined, fallback to isOpen
+  // 1. Estabelecimento desativado, arquivado ou bloqueado administrativamente
+  const active = establishment.active === true && establishment.suspended !== true;
+  if (!active) {
+    return {
+      storeStatus: "closed",
+      ordersStatus: "unavailable",
+      pauseStatus: "inactive",
+      pauseEndsAt: null,
+      canReceiveOrders: false,
+      reason: "Establishment is inactive or suspended"
+    };
+  }
+
+  // 2. Loja fechada
   const open = establishment.open !== undefined 
     ? establishment.open === true 
     : establishment.isOpen === true;
 
-  // acceptingOrders is required to be explicitly true (defaults to true if undefined)
+  if (!open) {
+    return {
+      storeStatus: "closed",
+      ordersStatus: "unavailable",
+      pauseStatus: "inactive",
+      pauseEndsAt: null,
+      canReceiveOrders: false,
+      reason: "Establishment is closed"
+    };
+  }
+
+  // 3. Pausa temporária ativa
+  const pauseActive = isPauseActive(establishment, currentDate);
+  if (pauseActive) {
+    const pauseEndsAt = establishment.pausedUntil ? parseDate(establishment.pausedUntil) : null;
+    return {
+      storeStatus: "open",
+      ordersStatus: "paused",
+      pauseStatus: "active",
+      pauseEndsAt,
+      canReceiveOrders: false,
+      reason: "Establishment is temporarily paused"
+    };
+  }
+
+  // 4. Aceitação manual de pedidos desativada
   const acceptingOrders = establishment.acceptingOrders !== undefined 
     ? establishment.acceptingOrders === true 
     : true;
 
-  // temporarilyPaused must not be true
-  const temporarilyPaused = establishment.temporarilyPaused === true;
+  if (!acceptingOrders) {
+    return {
+      storeStatus: "open",
+      ordersStatus: "paused",
+      pauseStatus: "inactive",
+      pauseEndsAt: null,
+      canReceiveOrders: false,
+      reason: "Orders are manually disabled"
+    };
+  }
 
-  // suspended must not be true
-  const suspended = establishment.suspended === true;
+  // 5. Operação normal
+  return {
+    storeStatus: "open",
+    ordersStatus: "accepting",
+    pauseStatus: "inactive",
+    pauseEndsAt: null,
+    canReceiveOrders: true,
+    reason: null
+  };
+}
 
-  return active && open && acceptingOrders && !temporarilyPaused && !suspended;
+/**
+ * Checks if an establishment can receive orders based on its current status.
+ */
+export function canEstablishmentReceiveOrders(establishment: any, currentDate: Date = new Date()): boolean {
+  const state = getEstablishmentOperationalState(establishment, currentDate);
+  return state.canReceiveOrders;
 }
 
 function formatTime(timeStr: string): string {
@@ -101,3 +197,19 @@ export function getNextOpeningTimeText(businessHours: any[] | undefined): string
 
   return null;
 }
+
+/**
+ * Central function to calculate the total estimated delivery time in minutes.
+ * Formula: estimatedTotalMinutes = baseEstimatedMinutes + additionalEstimatedMinutes
+ * If baseEstimatedMinutes is undefined or null, it indicates that the establishment's preparation time is not configured yet.
+ */
+export function calculateEstimatedTotalMinutes(
+  baseEstimatedMinutes: number | undefined | null,
+  additionalMinutes: number | undefined | null
+): number | undefined {
+  if (baseEstimatedMinutes === undefined || baseEstimatedMinutes === null) {
+    return undefined;
+  }
+  return Number(baseEstimatedMinutes) + Number(additionalMinutes || 0);
+}
+

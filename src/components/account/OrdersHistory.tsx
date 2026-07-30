@@ -1,9 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Order, OrderStatus } from '../../types';
-import { ClipboardList, MapPin, ShoppingBag, Calendar, CheckCircle2, Bike, ArrowLeft, ChevronRight, MessageSquare, AlertCircle, Store, Receipt, Clock } from 'lucide-react';
+import { ClipboardList, MapPin, ShoppingBag, Calendar, CheckCircle2, Bike, ArrowLeft, ChevronRight, MessageSquare, AlertCircle, Store, Receipt, Clock, Star } from 'lucide-react';
 import { useLocation } from '../../hooks/useLocation';
+import { useAuth } from '../../hooks/useAuth';
+import { ReviewModal } from './ReviewModal';
 import { normalizeOrderItem } from '../../utils/orderCalculation';
 import { formatOrderDateTime } from '../../utils/dateUtils';
+import { orderService } from '../../services/orderService';
 
 interface OrdersHistoryProps {
   orders: Order[];
@@ -13,7 +16,9 @@ type TabType = 'active' | 'completed' | 'cancelled';
 
 export const OrdersHistory: React.FC<OrdersHistoryProps> = ({ orders }) => {
   const [, navigate] = useLocation();
+  const { currentUser } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>('active');
+  const [selectedReviewOrder, setSelectedReviewOrder] = useState<Order | null>(null);
   const [isChanging, setIsChanging] = useState(false);
   const [hasError, setHasError] = useState(false);
 
@@ -38,6 +43,18 @@ export const OrdersHistory: React.FC<OrdersHistoryProps> = ({ orders }) => {
     }, 300);
     return () => clearTimeout(timer);
   }, [activeTab]);
+
+  // Mark all customer order status updates as seen in batch when viewing history
+  useEffect(() => {
+    if (currentUser && orders && orders.length > 0) {
+      const unreadOrders = orders.filter(
+        o => o.customerId === currentUser.uid && o.hasUnreadCustomerUpdate === true
+      );
+      if (unreadOrders.length > 0) {
+        orderService.markAllCustomerOrderUpdatesAsSeen(currentUser.uid, unreadOrders);
+      }
+    }
+  }, [orders, currentUser]);
 
   const paymentMethodLabel: Record<string, string> = {
     cash: 'Dinheiro na entrega',
@@ -317,10 +334,24 @@ export const OrdersHistory: React.FC<OrdersHistoryProps> = ({ orders }) => {
                     </div>
 
                     {/* Status Badge */}
-                    <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border flex items-center gap-1.5 ${statusInfo.bgClass}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass} ${isOrderActive ? 'animate-pulse' : ''}`}></span>
-                      {statusInfo.label}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border flex items-center gap-1.5 ${statusInfo.bgClass}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotClass} ${isOrderActive ? 'animate-pulse' : ''}`}></span>
+                        {statusInfo.label}
+                      </span>
+                      {order.status === 'concluido' && (
+                        <span className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border flex items-center gap-1.5 ${
+                          order.reviewSubmitted 
+                            ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                            : 'bg-amber-50 text-amber-800 border-amber-200'
+                        }`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            order.reviewSubmitted ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
+                          }`}></span>
+                          {order.reviewSubmitted ? 'Avaliado' : 'Avaliação pendente'}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {/* CARD: CONTEÚDO */}
@@ -487,14 +518,32 @@ export const OrdersHistory: React.FC<OrdersHistoryProps> = ({ orders }) => {
                           <span>Acompanhar pedido</span>
                         </button>
                       ) : (
-                        <button
-                          onClick={(e) => { e.stopPropagation(); navigate(`/acompanhar-pedido/${order.id}`); }}
-                          aria-label={`Ver detalhes do pedido número ${order.id}`}
-                          className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-black text-[#5C534E] hover:text-[#201A17] hover:bg-[#F7F4EF] transition-all cursor-pointer border border-[#EADFD8] shadow-2xs focus:outline-none focus:ring-2 focus:ring-[#E94F2F]/20"
-                        >
-                          <Receipt className="w-4 h-4 shrink-0 text-[#756B66]" />
-                          <span>Ver detalhes</span>
-                        </button>
+                        <div className="flex items-center gap-2 flex-1 sm:flex-initial">
+                          {order.status === 'concluido' && (
+                            <button
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                setSelectedReviewOrder(order); 
+                              }}
+                              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-black transition-all cursor-pointer border active:scale-95 ${
+                                order.reviewSubmitted
+                                  ? 'bg-white border-[#EADFD8] text-[#5C534E] hover:bg-[#F7F4EF]'
+                                  : 'bg-amber-500 border-transparent text-white hover:bg-amber-600'
+                              }`}
+                            >
+                              <Star className={`w-4 h-4 shrink-0 ${order.reviewSubmitted ? 'fill-amber-400 text-amber-400' : 'fill-white text-white'}`} />
+                              <span>{order.reviewSubmitted ? 'Editar' : 'Avaliar'}</span>
+                            </button>
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); navigate(`/acompanhar-pedido/${order.id}`); }}
+                            aria-label={`Ver detalhes do pedido número ${order.id}`}
+                            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-black text-[#5C534E] hover:text-[#201A17] hover:bg-[#F7F4EF] transition-all cursor-pointer border border-[#EADFD8] shadow-2xs focus:outline-none focus:ring-2 focus:ring-[#E94F2F]/20"
+                          >
+                            <Receipt className="w-4 h-4 shrink-0 text-[#756B66]" />
+                            <span>Ver detalhes</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -504,6 +553,20 @@ export const OrdersHistory: React.FC<OrdersHistoryProps> = ({ orders }) => {
           </div>
         )}
       </div>
+      
+      {selectedReviewOrder && currentUser && (
+        <ReviewModal
+          orderId={selectedReviewOrder.id}
+          establishmentId={selectedReviewOrder.establishmentId}
+          establishmentName={selectedReviewOrder.establishmentName}
+          customerUid={currentUser.uid}
+          customerName={currentUser.displayName || selectedReviewOrder.customerName || 'Cliente'}
+          onClose={() => setSelectedReviewOrder(null)}
+          onSuccess={() => {
+            selectedReviewOrder.reviewSubmitted = true;
+          }}
+        />
+      )}
     </div>
   );
 };

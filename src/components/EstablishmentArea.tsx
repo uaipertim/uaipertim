@@ -12,7 +12,7 @@ import {
   Store, List, Clock, Truck, TrendingUp, ShoppingBag, CheckCircle, 
   Settings, Save, Plus, Edit2, Trash2, Power, Eye, EyeOff, X, 
   DollarSign, BarChart3, Clock3, Users, Compass, AlertCircle, ChevronDown, ChevronUp, ArrowUp, ArrowDown, Check, RefreshCw,
-  LogOut, MessageSquare, ChevronRight, Bell
+  LogOut, MessageSquare, ChevronRight, Bell, Star, Sparkles, Image as ImageIcon, Tag, Calendar
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { PremiumOrderChat } from './order-chat/PremiumOrderChat';
@@ -21,6 +21,9 @@ import { PushNotificationControl } from './notifications/PushNotificationControl
 import { formatOrderTime, parseOrderDate } from '../utils/dateUtils';
 import { getCanonicalOrderStatus, isFinalOrderStatus } from '../utils/orderLifecycle';
 import { FinanceiroEstabelecimento } from './FinanceiroEstabelecimento';
+import { MerchantReviews } from './merchant/MerchantReviews';
+import { getEstablishmentOperationalState, calculateEstimatedTotalMinutes } from '../utils/establishmentUtils';
+import { establishmentsRepository } from '../repositories/establishmentsRepository';
 
 const parseBrazilianNumber = (value: any): number => {
   if (value === undefined || value === null) return 0;
@@ -40,6 +43,29 @@ const parseBrazilianNumber = (value: any): number => {
   
   const parsed = parseFloat(cleanValue);
   return isNaN(parsed) ? 0 : parsed;
+};
+
+const parseBrazilianOrIsoDate = (val: string): Date | null => {
+  if (!val) return null;
+  val = val.trim();
+  if (val === '') return null;
+
+  // Pattern for Brazilian format: DD/MM/YYYY HH:mm or DD/MM/YYYY
+  const brPattern = /^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?$/;
+  const brMatch = val.match(brPattern);
+  if (brMatch) {
+    const day = parseInt(brMatch[1], 10);
+    const month = parseInt(brMatch[2], 10) - 1; // 0-indexed month
+    const year = parseInt(brMatch[3], 10);
+    const hours = brMatch[4] ? parseInt(brMatch[4], 10) : 0;
+    const minutes = brMatch[5] ? parseInt(brMatch[5], 10) : 0;
+    const d = new Date(year, month, day, hours, minutes, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Fallback to standard ISO or local date-time parser
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
 };
 
 function getSaoPauloDateString(date: Date): string {
@@ -87,22 +113,27 @@ export const EstablishmentArea: React.FC = () => {
     showToast
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'geral' | 'pedidos' | 'cardapio' | 'horarios' | 'entregas' | 'financeiro' | 'notificacoes'>('pedidos');
+  const [activeTab, setActiveTab] = useState<'geral' | 'pedidos' | 'cardapio' | 'horarios' | 'entregas' | 'financeiro' | 'notificacoes' | 'avaliacoes'>('pedidos');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const [orderObservations, setOrderObservations] = useState<Record<string, string>>({});
+  const [updatingOrders, setUpdatingOrders] = useState<Record<string, boolean>>({});
 
   const handleUpdateOrderStatus = async (orderId: string, status: OrderStatus) => {
+    if (updatingOrders[orderId]) return;
     const note = orderObservations[orderId] || null;
+    setUpdatingOrders(prev => ({ ...prev, [orderId]: true }));
     try {
       await updateOrderStatus(orderId, status, undefined, undefined, note);
       setOrderObservations(prev => ({ ...prev, [orderId]: '' }));
     } catch (e) {
       console.error(e);
+    } finally {
+      setUpdatingOrders(prev => ({ ...prev, [orderId]: false }));
     }
   };
 
-  const { establishmentId: authEstId, isAuthenticated, logout } = useAuth();
+  const { establishmentId: authEstId, isAuthenticated, logout, userProfile, currentUser } = useAuth();
   const [, navigate] = useLocation();
   const { notifications, markAsRead } = useNotifications();
 
@@ -281,50 +312,109 @@ export const EstablishmentArea: React.FC = () => {
   // Tab filters inside orders tab
   const [pedidosFilter, setPedidosFilter] = useState<'todos' | 'novos' | 'preparacao' | 'prontos' | 'entrega' | 'concluidos'>('todos');
 
-  // Merchant status toggles
+  // Merchant status states & operational state derivation
+  const [isStatusUpdating, setIsStatusUpdating] = useState(false);
+  const [isPauseDurationModalOpen, setIsPauseDurationModalOpen] = useState(false);
+  const [currentTick, setCurrentTick] = useState(new Date());
+
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTick(new Date());
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const operationalState = useMemo(() => {
+    return getEstablishmentOperationalState(currentMerchant, currentTick);
+  }, [currentMerchant, currentTick]);
+
+  const updateMerchantStatus = async (fields: Partial<any>) => {
+    if (!currentMerchant || isStatusUpdating) return;
+    setIsStatusUpdating(true);
+    
+    const originalMerchant = { ...currentMerchant };
+    const updatedMerchant = {
+      ...currentMerchant,
+      ...fields
+    };
+    
+    try {
+      const isDemoMode = typeof window !== 'undefined' && localStorage.getItem('pl_catalog_data_source') !== 'firestore';
+      if (!isDemoMode) {
+        await establishmentsRepository.saveEstablishment(updatedMerchant);
+      }
+      
+      setEstablishments(prev => 
+        prev.map(e => e.id === merchantId ? updatedMerchant : e)
+      );
+      
+      showToast('Estado operacional atualizado com sucesso!', 'success');
+    } catch (error) {
+      console.error("Erro ao atualizar o estado operacional:", error, {
+        establishmentId: merchantId,
+        fields,
+        originalMerchant
+      });
+      showToast('Não foi possível atualizar o estado da operação. Tente novamente.', 'error');
+    } finally {
+      setIsStatusUpdating(false);
+    }
+  };
+
   const toggleOpen = () => {
-    if (!currentMerchant) return;
+    if (!currentMerchant || isStatusUpdating) return;
     const currentOpen = currentMerchant.open !== undefined ? currentMerchant.open : currentMerchant.isOpen;
     const nextState = !currentOpen;
-    showToast(nextState ? 'Sua loja está ABERTA!' : 'Sua loja está FECHADA para novos pedidos.', 'info');
-    setEstablishments(prev => 
-      prev.map(e => {
-        if (e.id === merchantId) {
-          return { ...e, open: nextState, isOpen: nextState };
-        }
-        return e;
-      })
-    );
+    showToast(nextState ? 'Abrindo a loja...' : 'Fechando a loja...', 'info');
+    updateMerchantStatus({
+      open: nextState,
+      isOpen: nextState
+    });
   };
 
   const toggleAcceptingOrders = () => {
-    if (!currentMerchant) return;
+    if (!currentMerchant || isStatusUpdating) return;
     const currentAccepting = currentMerchant.acceptingOrders !== undefined ? currentMerchant.acceptingOrders : true;
     const nextState = !currentAccepting;
-    showToast(nextState ? 'Sua loja agora está ACEITANDO pedidos!' : 'Sua loja NÃO está aceitando novos pedidos no momento.', 'info');
-    setEstablishments(prev => 
-      prev.map(e => {
-        if (e.id === merchantId) {
-          return { ...e, acceptingOrders: nextState };
-        }
-        return e;
-      })
-    );
+    showToast(nextState ? 'Habilitando aceitação de pedidos...' : 'Desabilitando aceitação de pedidos...', 'info');
+    updateMerchantStatus({
+      acceptingOrders: nextState
+    });
   };
 
   const toggleTemporarilyPaused = () => {
-    if (!currentMerchant) return;
-    const currentPaused = currentMerchant.temporarilyPaused === true;
-    const nextState = !currentPaused;
-    showToast(nextState ? 'Sua loja está com PEDIDOS PAUSADOS temporariamente!' : 'Sua loja está ATIVA (pausa temporária removida).', 'info');
-    setEstablishments(prev => 
-      prev.map(e => {
-        if (e.id === merchantId) {
-          return { ...e, temporarilyPaused: nextState };
-        }
-        return e;
-      })
-    );
+    if (!currentMerchant || isStatusUpdating) return;
+    const isPaused = operationalState.pauseStatus === 'active';
+    
+    if (isPaused) {
+      showToast('Removendo a pausa temporária...', 'info');
+      updateMerchantStatus({
+        temporarilyPaused: false,
+        pausedUntil: null
+      });
+    } else {
+      setIsPauseDurationModalOpen(true);
+    }
+  };
+
+  const handleSelectPauseDuration = (minutes: number | null) => {
+    setIsPauseDurationModalOpen(false);
+    let pausedUntilIsoStr: string | null = null;
+    
+    if (minutes !== null) {
+      const untilDate = new Date(Date.now() + minutes * 60 * 1000);
+      pausedUntilIsoStr = untilDate.toISOString();
+      const hh = String(untilDate.getHours()).padStart(2, '0');
+      const mm = String(untilDate.getMinutes()).padStart(2, '0');
+      showToast(`Ativando pausa temporária por ${minutes === 30 ? '30 minutos' : minutes === 60 ? '1 hora' : '2 horas'}. Retoma às ${hh}:${mm}.`, 'info');
+    } else {
+      showToast('Ativando pausa temporária por tempo indeterminado.', 'info');
+    }
+    
+    updateMerchantStatus({
+      temporarilyPaused: true,
+      pausedUntil: pausedUntilIsoStr
+    });
   };
 
   // Product CRUD states
@@ -337,6 +427,12 @@ export const EstablishmentArea: React.FC = () => {
   const [fetchingOrderMessage, setFetchingOrderMessage] = useState('Abrindo pedido...');
   const [fetchingOrderError, setFetchingOrderError] = useState<string | null>(null);
   const processedOrderIdRef = React.useRef<string | null>(null);
+
+  // Operational pendencies states
+  const [pendenciesError, setPendenciesError] = useState<Error | null>(null);
+  const [isRetryingPendencies, setIsRetryingPendencies] = useState(false);
+  const [isAllPendenciesModalOpen, setIsAllPendenciesModalOpen] = useState(false);
+  const [pendencyFilter, setPendencyFilter] = useState<'todas' | 'pedidos' | 'mensagens' | 'catalogo' | 'configuracoes'>('todas');
 
   const openMerchantOrderFromNotification = React.useCallback(async (
     orderId: string,
@@ -529,60 +625,6 @@ export const EstablishmentArea: React.FC = () => {
       }
     }
   }, [orders, selectedOrder]);
-
-  // Automatic background cleanup for Pão de Queijo Recheado
-  React.useEffect(() => {
-    Object.entries(products as Record<string, Product[]>).forEach(([estId, estProducts]) => {
-      const targetProd = estProducts.find(p => p.name === 'Pão de Queijo Recheado');
-      if (targetProd) {
-        const hasSizes = targetProd.sizes && targetProd.sizes.length > 0;
-        const hasBorders = targetProd.borders && targetProd.borders.length > 0;
-        const hasExtras = targetProd.extras && targetProd.extras.length > 0;
-        
-        let optionGroupsNeedFilter = false;
-        let optionalNeedsCorrection = false;
-        
-        if (targetProd.optionGroups && Array.isArray(targetProd.optionGroups)) {
-          optionGroupsNeedFilter = targetProd.optionGroups.some(g => {
-            const nameLower = g.name.toLowerCase();
-            return !nameLower.includes("adicionais") && g.id !== "adicionais" && g.id !== "adicionais-premium";
-          });
-          
-          optionalNeedsCorrection = targetProd.optionGroups.some(g => !g.required && g.minSelections !== 0);
-        }
-
-        if (hasSizes || hasBorders || hasExtras || optionGroupsNeedFilter || optionalNeedsCorrection) {
-          console.log("Auto-cleaning Pão de Queijo Recheado product in database...", targetProd.id);
-          
-          let cleanedGroups = targetProd.optionGroups ? [...targetProd.optionGroups] : [];
-          if (optionGroupsNeedFilter) {
-            cleanedGroups = cleanedGroups.filter(g => {
-              const nameLower = g.name.toLowerCase();
-              return nameLower.includes("adicionais") || g.id === "adicionais" || g.id === "adicionais-premium";
-            });
-          }
-          
-          cleanedGroups.forEach(g => {
-            if (!g.required) {
-              g.minSelections = 0;
-            }
-          });
-
-          const cleanedProduct = {
-            ...targetProd,
-            sizes: [],
-            borders: [],
-            extras: [],
-            optionGroups: cleanedGroups
-          };
-
-          addOrUpdateProduct(estId, cleanedProduct, { silent: true })
-            .then(() => console.log("Successfully auto-cleaned Pão de Queijo Recheado!"))
-            .catch(err => console.error("Failed to auto-clean Pão de Queijo Recheado:", err));
-        }
-      }
-    });
-  }, [products, addOrUpdateProduct]);
   
   // Product Form states
   const [prodName, setProdName] = useState('');
@@ -591,10 +633,19 @@ export const EstablishmentArea: React.FC = () => {
   const [prodCategory, setProdCategory] = useState('');
   const [prodAvailable, setProdAvailable] = useState(true);
   const [prodImage, setProdImage] = useState('');
+  const [prodPreparedToOrder, setProdPreparedToOrder] = useState(false);
+  const [prodFreshIngredients, setProdFreshIngredients] = useState(false);
+  const [promoEnabled, setPromoEnabled] = useState(false);
+  const [promoPrice, setPromoPrice] = useState('');
+  const [promoStartsAt, setPromoStartsAt] = useState('');
+  const [promoEndsAt, setPromoEndsAt] = useState('');
+  const [promoLabel, setPromoLabel] = useState('');
+  const [promoSource, setPromoSource] = useState<'establishment' | 'uaipertim'>('establishment');
   const [optionGroups, setOptionGroups] = useState<OptionGroup[]>([]);
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const [groupErrors, setGroupErrors] = useState<Record<string, { message: string; field?: string }>>({});
   const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [groupToDelete, setGroupToDelete] = useState<OptionGroup | null>(null);
 
   // Menu Categories Management States
   const [menuTab, setMenuTab] = useState<'produtos' | 'categorias'>('produtos');
@@ -611,6 +662,10 @@ export const EstablishmentArea: React.FC = () => {
   // Delete Category Confirmation Modal
   const [catToDelete, setCatToDelete] = useState<MenuCategory | null>(null);
   const [productsLinkedToCat, setProductsLinkedToCat] = useState<Product[]>([]);
+
+  // Delete Product Confirmation Modal
+  const [productToDelete, setProductToDelete] = useState<Product | null>(null);
+  const [isDeletingProduct, setIsDeletingProduct] = useState(false);
 
   // Handle opening product create/edit
   const handleOpenProductForm = (prod?: Product) => {
@@ -629,8 +684,43 @@ export const EstablishmentArea: React.FC = () => {
 
       setProdAvailable(prod.available);
       setProdImage(prod.image || '');
+      setProdPreparedToOrder(prod.preparedToOrder === true);
+      setProdFreshIngredients(prod.freshIngredients === true);
+      
+      // Initialize promotion states
+      setPromoEnabled(!!prod.promotionEnabled);
+      setPromoPrice(prod.promotionalPrice !== undefined && prod.promotionalPrice !== null ? prod.promotionalPrice.toFixed(2).replace('.', ',') : '');
+      
+      const formatDateForInput = (val: any) => {
+        if (!val) return '';
+        let d: Date | null = null;
+        if (typeof val.toDate === 'function') d = val.toDate();
+        else if (val instanceof Date) d = val;
+        else if (typeof val === 'string' || typeof val === 'number') {
+          d = parseBrazilianOrIsoDate(String(val));
+        }
+        else if (typeof val === 'object' && val.seconds !== undefined) d = new Date(val.seconds * 1000);
+        
+        if (d && !isNaN(d.getTime())) {
+          const year = d.getFullYear();
+          const month = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          const hours = String(d.getHours()).padStart(2, '0');
+          const minutes = String(d.getMinutes()).padStart(2, '0');
+          return `${year}-${month}-${day}T${hours}:${minutes}`;
+        }
+        return '';
+      };
+      
+      setPromoStartsAt(formatDateForInput(prod.promotionStartsAt));
+      setPromoEndsAt(formatDateForInput(prod.promotionEndsAt));
+      setPromoLabel(prod.promotionLabel || '');
+      setPromoSource(prod.promotionSource || 'establishment');
+
       const clonedGroups = prod.optionGroups ? JSON.parse(JSON.stringify(prod.optionGroups)) : [];
       clonedGroups.forEach((g: any) => {
+        if (!g.clientKey) g.clientKey = g.id;
+        if (!g.tempId) g.tempId = g.id;
         g.options.forEach((o: any) => {
           o.priceInput = o.additionalPrice !== undefined ? String(o.additionalPrice).replace('.', ',') : '';
         });
@@ -645,6 +735,17 @@ export const EstablishmentArea: React.FC = () => {
       setProdCategory(currentCats.length > 0 ? currentCats[0].id : '');
       setProdAvailable(true);
       setProdImage('');
+      
+      // Clear promotion states
+      setPromoEnabled(false);
+      setPromoPrice('');
+      setPromoStartsAt('');
+      setPromoEndsAt('');
+      setPromoLabel('');
+      setPromoSource('establishment');
+      setProdPreparedToOrder(false);
+      setProdFreshIngredients(false);
+
       setOptionGroups([]);
       setExpandedGroupId(null);
     }
@@ -653,50 +754,45 @@ export const EstablishmentArea: React.FC = () => {
 
   // Option Group Actions
   const autoAdjustGroupSelections = (group: OptionGroup): { updated: OptionGroup, adjustedMessage?: string } => {
-    const activeOptionsCount = group.options.filter(o => o.active).length;
     let updated = { ...group };
     let adjustedMessage: string | undefined;
 
+    const minSelect = updated.minSelect !== undefined ? updated.minSelect : updated.minSelections;
+    const maxSelect = updated.maxSelect !== undefined ? updated.maxSelect : updated.maxSelections;
+
+    updated.minSelect = minSelect;
+    updated.maxSelect = maxSelect;
+
     if (!updated.required) {
-      if (updated.minSelections !== 0) {
+      if (updated.minSelect !== 0) {
+        updated.minSelect = 0;
         updated.minSelections = 0;
-        adjustedMessage = `A seleção mínima do grupo "${group.name || 'Sem nome'}" foi ajustada para 0 porque o grupo é opcional.`;
       }
     }
 
-    if (activeOptionsCount === 0 && !group.required) {
-      if (updated.minSelections !== 0 || updated.maxSelections !== 0) {
-        updated.minSelections = 0;
-        updated.maxSelections = 0;
-        adjustedMessage = `As seleções mínima e máxima do grupo "${group.name || 'Sem nome'}" foram ajustadas para 0 porque o grupo não possui opções ativas.`;
-      }
-    } else {
-      // Rule: maxSelections <= activeOptionsCount
-      if (updated.maxSelections > activeOptionsCount) {
-        updated.maxSelections = activeOptionsCount;
-        adjustedMessage = `O limite máximo do grupo "${group.name || 'Sem nome'}" foi ajustado para ${activeOptionsCount} porque este grupo possui apenas ${activeOptionsCount} opção(ões) ativa(s).`;
-      }
-
-      // Rule: minSelections <= activeOptionsCount
-      if (updated.minSelections > activeOptionsCount) {
-        updated.minSelections = activeOptionsCount;
-      }
-
-      // Ensure maxSelections >= minSelections
-      if (updated.maxSelections < updated.minSelections) {
-        updated.maxSelections = updated.minSelections;
-      }
+    // Ensure maxSelect >= minSelect
+    if (updated.maxSelect < updated.minSelect) {
+      updated.maxSelect = updated.minSelect;
     }
+
+    // Always sync legacy with canonical
+    updated.minSelections = updated.minSelect;
+    updated.maxSelections = updated.maxSelect;
 
     return { updated, adjustedMessage };
   };
 
   const handleAddOptionGroup = () => {
+    const uniqueId = `g-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const newGroup: OptionGroup = {
-      id: `g-${Date.now()}`,
+      id: uniqueId,
+      clientKey: uniqueId,
+      tempId: uniqueId,
       name: '',
       description: '',
       required: false,
+      minSelect: 0,
+      maxSelect: 1,
       minSelections: 0,
       maxSelections: 1,
       position: optionGroups.length + 1,
@@ -704,18 +800,27 @@ export const EstablishmentArea: React.FC = () => {
       options: []
     };
     setOptionGroups([...optionGroups, newGroup]);
-    setExpandedGroupId(newGroup.id);
+    setExpandedGroupId(uniqueId);
   };
 
-  const handleRemoveOptionGroup = (groupId: string) => {
-    if (confirm('Deseja realmente remover este grupo de opcionais?')) {
-      const filtered = optionGroups.filter(g => g.id !== groupId);
-      const remapped = filtered.map((g, idx) => ({ ...g, position: idx + 1 }));
-      setOptionGroups(remapped);
-      if (expandedGroupId === groupId) {
-        setExpandedGroupId(null);
-      }
+  const requestDeleteOptionGroup = (groupKey: string) => {
+    const group = optionGroups.find(g => (g.clientKey ?? g.id) === groupKey);
+    if (group) {
+      setGroupToDelete(group);
     }
+  };
+
+  const confirmDeleteOptionGroup = () => {
+    if (!groupToDelete) return;
+    const groupKey = groupToDelete.clientKey ?? groupToDelete.id;
+    setOptionGroups(prev => {
+      const filtered = prev.filter(g => (g.clientKey ?? g.id) !== groupKey);
+      return filtered.map((g, idx) => ({ ...g, position: idx + 1 }));
+    });
+    if (expandedGroupId === groupKey) {
+      setExpandedGroupId(null);
+    }
+    setGroupToDelete(null);
   };
 
   const handleMoveOptionGroup = (index: number, direction: 'up' | 'down') => {
@@ -737,11 +842,18 @@ export const EstablishmentArea: React.FC = () => {
         let updated = { ...g, ...updates };
         if (updates.required !== undefined) {
           if (updates.required) {
-            updated.minSelections = Math.max(1, updated.minSelections);
+            updated.minSelect = Math.max(1, updated.minSelect !== undefined ? updated.minSelect : updated.minSelections);
           } else {
-            updated.minSelections = 0;
+            updated.minSelect = 0;
           }
         }
+
+        // Propagate changes from updates to both fields
+        if (updates.minSelect !== undefined) updated.minSelections = updates.minSelect;
+        if (updates.minSelections !== undefined) updated.minSelect = updates.minSelections;
+        if (updates.maxSelect !== undefined) updated.maxSelections = updates.maxSelect;
+        if (updates.maxSelections !== undefined) updated.maxSelect = updates.maxSelections;
+
         const { updated: adjusted, adjustedMessage } = autoAdjustGroupSelections(updated);
         if (adjustedMessage) {
           showToast(adjustedMessage, 'info');
@@ -857,20 +969,14 @@ export const EstablishmentArea: React.FC = () => {
 
       if (!group.name.trim()) {
         errors[group.id] = { message: `Por favor, preencha o nome do grupo de opcionais.`, field: 'name' };
-      } else if (group.required && group.minSelections < 1) {
-        errors[group.id] = { message: `A seleção mínima deve ser pelo menos 1 por ser obrigatório.`, field: 'minSelections' };
-      } else if (!group.required && group.minSelections > 0) {
-        errors[group.id] = { message: `A seleção mínima deve ser 0 quando opcional.`, field: 'minSelections' };
-      } else if (group.maxSelections < group.minSelections) {
-        errors[group.id] = { message: `A seleção máxima (${group.maxSelections}) não pode ser menor que a mínima (${group.minSelections}).`, field: 'maxSelections' };
-      } else if (group.maxSelections > activeOptionsCount) {
-        errors[group.id] = { message: `A seleção máxima (${group.maxSelections}) não pode superar a quantidade de opções ativas (${activeOptionsCount}).`, field: 'maxSelections' };
-      } else if (activeOptionsCount === 0) {
-        if (group.required) {
-          errors[group.id] = { message: `Este grupo é obrigatório, mas não possui nenhuma opção ativa. Ative pelo menos uma opção.`, field: 'options' };
-        } else if (group.minSelections !== 0 || group.maxSelections !== 0) {
-          errors[group.id] = { message: `Como o grupo não tem opções ativas, as seleções mínima e máxima devem ser 0.`, field: 'minSelections' };
-        }
+      } else if (group.required && group.minSelect < 1) {
+        errors[group.id] = { message: `A seleção mínima deve ser pelo menos 1 por ser obrigatório.`, field: 'minSelect' };
+      } else if (!group.required && group.minSelect > 0) {
+        errors[group.id] = { message: `A seleção mínima deve ser 0 quando opcional.`, field: 'minSelect' };
+      } else if (group.maxSelect < group.minSelect) {
+        errors[group.id] = { message: `A seleção máxima (${group.maxSelect}) não pode ser menor que a mínima (${group.minSelect}).`, field: 'maxSelect' };
+      } else if (activeOptionsCount === 0 && group.required) {
+        errors[group.id] = { message: `Este grupo é obrigatório, mas não possui nenhuma opção ativa. Ative pelo menos uma opção.`, field: 'options' };
       }
 
       if (!errors[group.id]) {
@@ -906,8 +1012,8 @@ export const EstablishmentArea: React.FC = () => {
 
           let inputId = `group-card-${gid}`;
           if (fid === 'name') inputId = `group-name-${gid}`;
-          else if (fid === 'minSelections') inputId = `group-min-${gid}`;
-          else if (fid === 'maxSelections') inputId = `group-max-${gid}`;
+          else if (fid === 'minSelect' || fid === 'minSelections') inputId = `group-min-${gid}`;
+          else if (fid === 'maxSelect' || fid === 'maxSelections') inputId = `group-max-${gid}`;
           else if (fid && fid.startsWith('opt-name-')) inputId = fid;
 
           const inputElement = document.getElementById(inputId);
@@ -921,6 +1027,70 @@ export const EstablishmentArea: React.FC = () => {
 
     // Clear errors if all good
     setGroupErrors({});
+
+    // Process and validate promotion data
+    let finalPromotionalPrice: number | undefined = undefined;
+    let finalPromotionEnabled = false;
+    let finalStartsAt: any = null;
+    let finalEndsAt: any = null;
+    let finalPromoLabel = '';
+    let finalPromoSource = promoSource;
+
+    if (promoEnabled) {
+      if (promoSource === 'uaipertim') {
+        // Platform promotion: we only allow toggling the enabled state
+        finalPromotionalPrice = editingProduct?.promotionalPrice;
+        finalPromotionEnabled = true;
+        finalStartsAt = editingProduct?.promotionStartsAt || null;
+        finalEndsAt = editingProduct?.promotionEndsAt || null;
+        finalPromoLabel = editingProduct?.promotionLabel || 'Oferta UaiPertim';
+        finalPromoSource = 'uaipertim';
+      } else {
+        // Merchant promotion: validate everything
+        const parsedPromoPrice = parseBrazilianNumber(promoPrice);
+        const startsDate = parseBrazilianOrIsoDate(promoStartsAt);
+        const endsDate = parseBrazilianOrIsoDate(promoEndsAt);
+
+        if (isNaN(parsedPromoPrice) || parsedPromoPrice <= 0) {
+          showToast('O preço promocional deve ser maior que zero.', 'error');
+          setIsSavingProduct(false);
+          return;
+        }
+        if (parsedPromoPrice >= priceNum) {
+          showToast('O preço promocional deve ser menor que o preço normal.', 'error');
+          setIsSavingProduct(false);
+          return;
+        }
+        if (startsDate && endsDate && endsDate <= startsDate) {
+          showToast('A data de encerramento deve ser posterior à data de início.', 'error');
+          setIsSavingProduct(false);
+          return;
+        }
+
+        finalPromotionalPrice = parsedPromoPrice;
+        finalPromotionEnabled = true;
+        finalStartsAt = startsDate;
+        finalEndsAt = endsDate;
+        finalPromoLabel = promoLabel.trim() || 'Oferta';
+        finalPromoSource = 'establishment';
+      }
+    } else {
+      finalPromotionEnabled = false;
+      if (promoSource === 'uaipertim') {
+        finalPromotionalPrice = editingProduct?.promotionalPrice;
+        finalStartsAt = editingProduct?.promotionStartsAt || null;
+        finalEndsAt = editingProduct?.promotionEndsAt || null;
+        finalPromoLabel = editingProduct?.promotionLabel || 'Oferta UaiPertim';
+        finalPromoSource = 'uaipertim';
+      } else {
+        const parsedPromoPrice = promoPrice ? parseBrazilianNumber(promoPrice) : undefined;
+        finalPromotionalPrice = parsedPromoPrice && !isNaN(parsedPromoPrice) ? parsedPromoPrice : undefined;
+        finalStartsAt = parseBrazilianOrIsoDate(promoStartsAt);
+        finalEndsAt = parseBrazilianOrIsoDate(promoEndsAt);
+        finalPromoLabel = promoLabel.trim();
+        finalPromoSource = 'establishment';
+      }
+    }
 
     // Sync legacy sizes, borders, and extras from optionGroups to preserve compatibility
     const finalSizesGroup = optionGroups.find(g => g.name.toLowerCase().includes('tamanho') || g.id === 'tamanho' || g.id === 'escolha-o-tamanho');
@@ -950,23 +1120,46 @@ export const EstablishmentArea: React.FC = () => {
       establishmentId: merchantId,
       menuCategoryId: prodCategory,
       menuCategoryName: matchedCat ? matchedCat.name : prodCategory,
+      promotionEnabled: finalPromotionEnabled,
+      promotionalPrice: finalPromotionalPrice,
+      promotionStartsAt: finalStartsAt,
+      promotionEndsAt: finalEndsAt,
+      promotionLabel: finalPromoLabel,
+      promotionSource: finalPromoSource,
+      preparedToOrder: Boolean(prodPreparedToOrder),
+      freshIngredients: Boolean(prodFreshIngredients),
     };
 
     try {
-      await addOrUpdateProduct(merchantId, productData);
+      await addOrUpdateProduct(merchantId, productData, { silent: true });
       setIsProductModalOpen(false);
-    } catch (err) {
-      console.error("Failed to save product:", err);
+      showToast(editingProduct ? 'Produto atualizado com sucesso!' : 'Produto adicionado ao catálogo com sucesso!', 'success');
+    } catch (err: any) {
+      console.error("Failed to save product:", {
+        error: err?.code || 'UNKNOWN_ERROR',
+        message: err?.message || String(err),
+        productId: productData.id,
+        establishmentId: merchantId,
+        promoPayload: {
+          promotionEnabled: productData.promotionEnabled,
+          promotionalPrice: productData.promotionalPrice,
+          promotionLabel: productData.promotionLabel,
+          promotionStartsAt: productData.promotionStartsAt,
+          promotionEndsAt: productData.promotionEndsAt,
+          promotionSource: productData.promotionSource
+        },
+        firestorePath: `products/${productData.id}`,
+        stage: 'EstablishmentArea.tsx: handleSubmitProduct'
+      });
+      showToast('Não foi possível salvar a promoção. Tente novamente.', 'error');
     } finally {
       setIsSavingProduct(false);
     }
   };
 
   // Delete product
-  const handleDeleteProductClick = (prodId: string) => {
-    if (confirm('Deseja realmente remover este produto do cardápio permanentemente?')) {
-      deleteProduct(merchantId, prodId);
-    }
+  const handleDeleteProductClick = (product: Product) => {
+    setProductToDelete(product);
   };
 
   // Local settings for business hours and neighborhoods
@@ -1024,10 +1217,355 @@ export const EstablishmentArea: React.FC = () => {
   };
 
   React.useEffect(() => {
-    if (activeTab === 'entregas') {
+    setDeliveryZones([]); // Reset zones to avoid any cross-establishment visual leakage
+    setZonesLoading(true); // Default to loading state for clean transitions
+    if (activeTab === 'entregas' || activeTab === 'geral') {
       fetchZones();
+    } else {
+      setZonesLoading(false);
     }
   }, [activeTab, merchantId]);
+
+  // Operational Pendencies Settings & Constants
+  const WAITING_ORDER_CRITICAL_MINUTES = 10;
+  const WAITING_ORDER_HIGH_MINUTES = 5;
+
+  interface OperationalPendency {
+    id: string;
+    type: 'pedido_aguardando' | 'pedido_atrasado' | 'mensagem_nao_respondida' | 'produto_sem_imagem' | 'promocao_encerrando' | 'horario_nao_configurado' | 'entrega_incompleta';
+    title: string;
+    description: string;
+    priority: 'critica' | 'alta' | 'media' | 'informativa';
+    timeLabel?: string;
+    actionLabel: string;
+    sortValue: number;
+    onClick: () => void;
+    targetId?: string;
+  }
+
+  const handleRetryPendencies = async () => {
+    setIsRetryingPendencies(true);
+    setPendenciesError(null);
+    try {
+      await fetchZones();
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (e: any) {
+      console.error("Erro ao tentar recarregar pendências:", {
+        code: e.code || 'UNKNOWN',
+        message: e.message,
+        establishmentId: merchantId,
+        origem: 'handleRetryPendencies'
+      });
+      setPendenciesError(e);
+    } finally {
+      setIsRetryingPendencies(false);
+    }
+  };
+
+  const pendencies = useMemo<OperationalPendency[]>(() => {
+    try {
+      const list: OperationalPendency[] = [];
+      
+      // A. Pedidos Aguardando Confirmação
+      merchantOrders.forEach(order => {
+        const status = (order.status || '').toLowerCase().trim();
+        if (status === 'aguardando_confirmacao') {
+          const createdAtDate = parseOrderDate(order.createdAt);
+          const elapsedMinutes = Math.floor((Date.now() - createdAtDate.getTime()) / 60000);
+          let priority: 'critica' | 'alta' | 'media' = 'media';
+          if (elapsedMinutes >= WAITING_ORDER_CRITICAL_MINUTES) {
+            priority = 'critica';
+          } else if (elapsedMinutes >= WAITING_ORDER_HIGH_MINUTES) {
+            priority = 'alta';
+          }
+          
+          list.push({
+            id: `pedido_aguardando_${order.id}`,
+            type: 'pedido_aguardando',
+            title: "Pedido aguardando confirmação",
+            description: `Pedido ${order.id} de ${order.customerName || 'Cliente'} aguardando confirmação há ${elapsedMinutes} ${elapsedMinutes === 1 ? 'minuto' : 'minutos'}.`,
+            priority,
+            timeLabel: elapsedMinutes <= 0 ? 'agora mesmo' : `há ${elapsedMinutes} min`,
+            actionLabel: "Ver pedido",
+            sortValue: createdAtDate.getTime(),
+            onClick: () => {
+              setSelectedOrder(order);
+              setActiveTab('pedidos');
+            },
+            targetId: order.id
+          });
+        }
+      });
+
+      // B. Pedidos com Tempo de Preparo Excedido
+      merchantOrders.forEach(order => {
+        const status = (order.status || '').toLowerCase().trim();
+        if (status === 'confirmado' || status === 'em_preparacao') {
+          const startEntry = order.statusHistory?.find(h => h.status === 'em_preparacao') || order.statusHistory?.find(h => h.status === 'confirmado');
+          const startTime = startEntry ? parseOrderDate(startEntry.timestamp) : parseOrderDate(order.createdAt);
+          const elapsedMinutes = Math.floor((Date.now() - startTime.getTime()) / 60000);
+          
+          let estimatedMinutes = calculateEstimatedTotalMinutes(currentMerchant.baseEstimatedMinutes, 0) || 30;
+          if (order.deliveryType === 'entrega' && deliveryZones.length > 0) {
+            const zone = deliveryZones.find(z => z.neighborhoodName?.toLowerCase().trim() === order.customerAddress?.bairro?.toLowerCase().trim());
+            if (zone) {
+              estimatedMinutes = calculateEstimatedTotalMinutes(currentMerchant.baseEstimatedMinutes, zone.additionalEstimatedMinutes || 0) || (30 + (zone.additionalEstimatedMinutes || 0));
+            }
+          }
+          
+          const exceededMinutes = elapsedMinutes - estimatedMinutes;
+          if (exceededMinutes > 0) {
+            const priority = exceededMinutes >= 10 ? 'critica' : 'alta';
+            list.push({
+              id: `pedido_atrasado_${order.id}`,
+              type: 'pedido_atrasado',
+              title: "Preparo atrasado",
+              description: `Pedido ${order.id} ultrapassou o tempo estimado de preparo em ${exceededMinutes} ${exceededMinutes === 1 ? 'minuto' : 'minutos'}.`,
+              priority,
+              timeLabel: `atrasado ${exceededMinutes} min`,
+              actionLabel: "Atualizar pedido",
+              sortValue: startTime.getTime(),
+              onClick: () => {
+                setSelectedOrder(order);
+                setActiveTab('pedidos');
+              },
+              targetId: order.id
+            });
+          }
+        }
+      });
+
+      // C. Mensagens não Respondidas
+      merchantOrders.forEach(order => {
+        const unreadCount = Number(order.chatUnreadMerchant ?? 0);
+        if (unreadCount > 0) {
+          const lastMsgTime = order.chatLastMessageAt ? parseOrderDate(order.chatLastMessageAt) : parseOrderDate(order.createdAt);
+          list.push({
+            id: `mensagem_${order.id}`,
+            type: 'mensagem_nao_respondida',
+            title: "Mensagens não respondidas",
+            description: `Pedido ${order.id} de ${order.customerName || 'Cliente'} possui ${unreadCount} ${unreadCount === 1 ? 'mensagem não lida' : 'mensagens não lidas'}.`,
+            priority: 'alta',
+            timeLabel: `${unreadCount} unread`,
+            actionLabel: "Responder",
+            sortValue: lastMsgTime.getTime(),
+            onClick: () => {
+              setChatOrder(order);
+              setActiveTab('pedidos');
+            },
+            targetId: order.id
+          });
+        }
+      });
+
+      // D. Produtos sem Imagem
+      const productsWithoutImage = merchantProducts.filter(p => 
+        p.available && (
+          !p.image || 
+          p.image.trim() === '' || 
+          p.image === 'placeholder_url' || 
+          p.image.includes('placeholder')
+        )
+      );
+      if (productsWithoutImage.length > 0) {
+        list.push({
+          id: 'produtos_sem_imagem',
+          type: 'produto_sem_imagem',
+          title: "Produtos sem imagem",
+          description: `${productsWithoutImage.length} ${productsWithoutImage.length === 1 ? 'produto ativo está sem imagem' : 'produtos ativos estão sem imagem'}.`,
+          priority: 'informativa',
+          actionLabel: "Revisar catálogo",
+          sortValue: 0,
+          onClick: () => {
+            setActiveTab('cardapio');
+          }
+        });
+      }
+
+      // E. Promoções Encerrando / Expiradas
+      merchantProducts.forEach(p => {
+        if (p.promotionEnabled && p.promotionEndsAt) {
+          const endsAt = parseOrderDate(p.promotionEndsAt);
+          const now = Date.now();
+          if (endsAt.getTime() < now) {
+            list.push({
+              id: `promocao_expirada_${p.id}`,
+              type: 'promocao_encerrando',
+              title: "Promoção expirada",
+              description: `A promoção do produto ${p.name} expirou e não está mais sendo aplicada.`,
+              priority: 'informativa',
+              actionLabel: "Atualizar promoção",
+              sortValue: endsAt.getTime(),
+              onClick: () => {
+                handleOpenProductForm(p);
+                setActiveTab('cardapio');
+              },
+              targetId: p.id
+            });
+          } else {
+            const msRemaining = endsAt.getTime() - now;
+            if (msRemaining <= 24 * 60 * 60 * 1000) {
+              const hoursRemaining = msRemaining / 3600000;
+              let priority: 'critica' | 'alta' | 'media' | 'informativa' = 'informativa';
+              if (hoursRemaining <= 1) {
+                priority = 'alta';
+              } else if (hoursRemaining <= 6) {
+                priority = 'media';
+              }
+              
+              const hh = String(endsAt.getHours()).padStart(2, '0');
+              const mm = String(endsAt.getMinutes()).padStart(2, '0');
+              list.push({
+                id: `promocao_encerrando_${p.id}`,
+                type: 'promocao_encerrando',
+                title: "Promoção encerrando em breve",
+                description: `A promoção do produto ${p.name} encerra hoje às ${hh}:${mm}.`,
+                priority,
+                timeLabel: `restam ${Math.ceil(hoursRemaining)}h`,
+                actionLabel: "Revisar promoção",
+                sortValue: endsAt.getTime(),
+                onClick: () => {
+                  handleOpenProductForm(p);
+                  setActiveTab('cardapio');
+                },
+                targetId: p.id
+              });
+            }
+          }
+        }
+      });
+
+      // F. Horário de Funcionamento Não Configurado
+      const DAYS_OF_WEEK = [
+        "Domingo",
+        "Segunda-feira",
+        "Terça-feira",
+        "Quarta-feira",
+        "Quinta-feira",
+        "Sexta-feira",
+        "Sábado"
+      ];
+      const todayIndex = new Date().getDay();
+      const todayDayName = DAYS_OF_WEEK[todayIndex];
+
+      const todayConfig = businessHours.find(h => h.day === todayDayName);
+      const isNoHoursRegistered = businessHours.length === 0;
+      const isTodayMissing = !todayConfig;
+      const isTodayInvalid = todayConfig && todayConfig.isOpen && (
+        !todayConfig.openTime || todayConfig.openTime.trim() === '' ||
+        !todayConfig.closeTime || todayConfig.closeTime.trim() === '' ||
+        !todayConfig.openTime.includes(':') || !todayConfig.closeTime.includes(':')
+      );
+
+      if (isNoHoursRegistered) {
+        list.push({
+          id: 'horario_não_configurado',
+          type: 'horario_nao_configurado',
+          title: "Horários não configurados",
+          description: "Nenhum horário de funcionamento semanal está cadastrado.",
+          priority: 'media',
+          actionLabel: "Configurar horários",
+          sortValue: 1,
+          onClick: () => setActiveTab('horarios')
+        });
+      } else if (isTodayMissing) {
+        list.push({
+          id: 'horario_não_configurado',
+          type: 'horario_nao_configurado',
+          title: "Horário de hoje ausente",
+          description: "O horário de funcionamento de hoje não está configurado.",
+          priority: 'media',
+          actionLabel: "Configurar horários",
+          sortValue: 2,
+          onClick: () => setActiveTab('horarios')
+        });
+      } else if (isTodayInvalid) {
+        list.push({
+          id: 'horario_não_configurado',
+          type: 'horario_nao_configurado',
+          title: "Horário incompleto",
+          description: "O horário de funcionamento de hoje possui configuração incompleta ou inválida.",
+          priority: 'media',
+          actionLabel: "Configurar horários",
+          sortValue: 3,
+          onClick: () => setActiveTab('horarios')
+        });
+      }
+
+      // G. Configuração de Entrega Incompleta
+      const offersDelivery = !!(currentMerchant.acceptsDelivery || currentMerchant.entregaPropria);
+      if (offersDelivery) {
+        if (deliveryZones.length === 0) {
+          list.push({
+            id: 'entrega_incompleta',
+            type: 'entrega_incompleta',
+            title: "Entrega sem áreas configuradas",
+            description: "A entrega está ativada, mas nenhuma zona de entrega foi configurada.",
+            priority: 'media',
+            actionLabel: "Configurar entregas",
+            sortValue: 1,
+            onClick: () => setActiveTab('entregas')
+          });
+        } else {
+          const hasIncompleteZone = deliveryZones.some(z => 
+            z.active && (
+              z.deliveryFee === undefined || z.deliveryFee === null || isNaN(z.deliveryFee) ||
+              z.additionalEstimatedMinutes === undefined || z.additionalEstimatedMinutes === null || isNaN(z.additionalEstimatedMinutes)
+            )
+          );
+          const isBaseEstimatedTimeMissing = !currentMerchant.baseEstimatedMinutes || currentMerchant.baseEstimatedMinutes <= 0;
+          
+          if (hasIncompleteZone) {
+            list.push({
+              id: 'entrega_incompleta',
+              type: 'entrega_incompleta',
+              title: "Zonas de entrega incompletas",
+              description: "Existem zonas de entrega ativas com configurações de taxa ou tempo incompletas.",
+              priority: 'media',
+              actionLabel: "Configurar entregas",
+              sortValue: 2,
+              onClick: () => setActiveTab('entregas')
+            });
+          } else if (isBaseEstimatedTimeMissing) {
+            list.push({
+              id: 'entrega_incompleta',
+              type: 'entrega_incompleta',
+              title: "Tempo de preparo do estabelecimento ausente",
+              description: "O tempo de preparo do estabelecimento não está configurado.",
+              priority: 'media',
+              actionLabel: "Configurar entregas",
+              sortValue: 3,
+              onClick: () => setActiveTab('entregas')
+            });
+          }
+        }
+      }
+
+      // Sort by Priority first, then by sortValue
+      const priorityWeight = {
+        critica: 4,
+        alta: 3,
+        media: 2,
+        informativa: 1
+      };
+
+      return list.sort((a, b) => {
+        const diff = priorityWeight[b.priority] - priorityWeight[a.priority];
+        if (diff !== 0) return diff;
+        return a.sortValue - b.sortValue;
+      });
+
+    } catch (err: any) {
+      console.error("Erro ao calcular pendências operacionais:", {
+        code: err.code || 'UNKNOWN',
+        message: err.message,
+        establishmentId: merchantId,
+        origem: 'useMemo[pendencies]'
+      });
+      setPendenciesError(err);
+      return [];
+    }
+  }, [merchantOrders, merchantProducts, businessHours, deliveryZones, currentMerchant, merchantId]);
 
   // Toggle delivery zone active status
   const handleToggleZoneStatus = async (zone: any) => {
@@ -1138,8 +1676,9 @@ export const EstablishmentArea: React.FC = () => {
   const [acceptDebitCard, setAcceptDebitCard] = useState<boolean>(true);
   const [acceptCreditCard, setAcceptCreditCard] = useState<boolean>(true);
   const [acceptContactless, setAcceptContactless] = useState<boolean>(true);
-  const [acceptDeliveryPayment, setAcceptDeliveryPayment] = useState<boolean>(true);
-  const [acceptPickupPayment, setAcceptPickupPayment] = useState<boolean>(true);
+  const [acceptsDelivery, setAcceptsDelivery] = useState<boolean>(true);
+  const [acceptsPickup, setAcceptsPickup] = useState<boolean>(true);
+  const [baseEstimatedMinutes, setBaseEstimatedMinutes] = useState<number | undefined>(undefined);
 
   React.useEffect(() => {
     if (currentMerchant) {
@@ -1148,30 +1687,71 @@ export const EstablishmentArea: React.FC = () => {
       setAcceptDebitCard(currentMerchant.acceptDebitCard !== false);
       setAcceptCreditCard(currentMerchant.acceptCreditCard !== false);
       setAcceptContactless(currentMerchant.acceptContactless !== false);
-      setAcceptDeliveryPayment(currentMerchant.acceptDeliveryPayment !== false);
-      setAcceptPickupPayment(currentMerchant.acceptPickupPayment !== false);
+      
+      const deliveryVal = typeof currentMerchant.acceptsDelivery === 'boolean'
+        ? currentMerchant.acceptsDelivery
+        : (currentMerchant.entregaPropria !== false);
+      const pickupVal = typeof currentMerchant.acceptsPickup === 'boolean'
+        ? currentMerchant.acceptsPickup
+        : (currentMerchant.atendeRetirada !== false);
+      setAcceptsDelivery(deliveryVal);
+      setAcceptsPickup(pickupVal);
+      
+      setBaseEstimatedMinutes(
+        currentMerchant.baseEstimatedMinutes !== undefined 
+          ? Number(currentMerchant.baseEstimatedMinutes) 
+          : undefined
+      );
     }
   }, [currentMerchant]);
 
-  const handleSavePaymentConfig = () => {
-    setEstablishments(prev =>
-      prev.map(e => {
-        if (e.id === merchantId) {
-          return {
-            ...e,
-            acceptCash,
-            acceptPix,
-            acceptDebitCard,
-            acceptCreditCard,
-            acceptContactless,
-            acceptDeliveryPayment,
-            acceptPickupPayment
-          };
-        }
-        return e;
-      })
-    );
-    showToast('Configurações de pagamento salvas com sucesso!', 'success');
+  const handleSavePaymentConfig = async () => {
+    if (!acceptsDelivery && !acceptsPickup) {
+      showToast('Selecione ao menos uma modalidade: entrega ou retirada.', 'error');
+      return;
+    }
+
+    const acceptedPaymentMethods = [];
+    if (acceptCash) acceptedPaymentMethods.push('cash');
+    if (acceptPix) acceptedPaymentMethods.push('pix');
+    if (acceptDebitCard) acceptedPaymentMethods.push('debit_card');
+    if (acceptCreditCard) acceptedPaymentMethods.push('credit_card');
+    if (acceptContactless) acceptedPaymentMethods.push('contactless_nfc');
+
+    const updatedMerchant = {
+      ...currentMerchant,
+      acceptCash,
+      acceptPix,
+      acceptDebitCard,
+      acceptCreditCard,
+      acceptContactless,
+      acceptsDelivery,
+      acceptsPickup,
+      entregaPropria: acceptsDelivery,
+      atendeRetirada: acceptsPickup,
+      acceptedPaymentMethods,
+      acceptDeliveryPayment: acceptsDelivery,
+      acceptPickupPayment: acceptsPickup,
+      fulfillment: {
+        delivery: acceptsDelivery,
+        pickup: acceptsPickup
+      }
+    };
+
+    try {
+      const isDemoMode = typeof window !== 'undefined' && localStorage.getItem('pl_catalog_data_source') !== 'firestore';
+      if (!isDemoMode) {
+        await establishmentsRepository.saveEstablishment(updatedMerchant);
+      }
+      
+      setEstablishments(prev =>
+        prev.map(e => e.id === merchantId ? updatedMerchant : e)
+      );
+      showToast('Configurações salvas com sucesso!', 'success');
+    } catch (error) {
+      console.error("Erro ao salvar as configurações de pagamento:", error);
+      showToast('Não foi possível salvar as configurações de pagamento.', 'error');
+    }
   };
 
   // Handle business hour change
@@ -1203,6 +1783,137 @@ export const EstablishmentArea: React.FC = () => {
     setNeighborhoods(localNeighborhoods);
   };
 
+  const renderPendencyItem = (p: OperationalPendency) => {
+    const Icon = p.type === 'pedido_aguardando' ? AlertCircle
+      : p.type === 'pedido_atrasado' ? Clock
+      : p.type === 'mensagem_nao_respondida' ? MessageSquare
+      : p.type === 'produto_sem_imagem' ? ImageIcon
+      : p.type === 'promocao_encerrando' ? Tag
+      : p.type === 'horario_nao_configurado' ? Calendar
+      : Truck;
+
+    const priorityColors = {
+      critica: {
+        bg: 'bg-rose-50 border-rose-200 text-rose-700',
+        badge: 'bg-rose-600 text-white',
+        label: 'Crítica',
+        iconColor: 'text-rose-600'
+      },
+      alta: {
+        bg: 'bg-orange-50 border-orange-200 text-orange-700',
+        badge: 'bg-orange-600 text-white',
+        label: 'Alta',
+        iconColor: 'text-orange-600'
+      },
+      media: {
+        bg: 'bg-amber-50 border-amber-200 text-amber-700',
+        badge: 'bg-amber-500 text-white',
+        label: 'Média',
+        iconColor: 'text-amber-600'
+      },
+      informativa: {
+        bg: 'bg-slate-50 border-slate-200 text-slate-700',
+        badge: 'bg-slate-500 text-white',
+        label: 'Informativa',
+        iconColor: 'text-slate-600'
+      }
+    };
+
+    const colors = priorityColors[p.priority] || priorityColors.informativa;
+
+    return (
+      <div 
+        key={p.id} 
+        className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${colors.bg}`}
+        id={`pendency-item-${p.id}`}
+      >
+        <div className="flex items-start gap-3 min-w-0">
+          <div className={`p-2 bg-white rounded-xl shadow-xs shrink-0 ${colors.iconColor}`}>
+            <Icon className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h4 className="text-xs font-black text-[#201A17]">{p.title}</h4>
+              <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full ${colors.badge}`}>
+                {colors.label}
+              </span>
+            </div>
+            <p className="text-xs text-[#5C534E] leading-relaxed break-words">{p.description}</p>
+          </div>
+        </div>
+        
+        <button
+          onClick={p.onClick}
+          className="self-end md:self-center bg-[#201A17] hover:bg-[#E94F2F] text-white px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0"
+          aria-label={`${p.actionLabel}: ${p.title}`}
+        >
+          {p.actionLabel}
+        </button>
+      </div>
+    );
+  };
+
+  const renderEmptyState = () => (
+    <div className="bg-white rounded-3xl border border-[#EADFD8] p-8 text-center space-y-3 animate-fade-in" id="merchant-pendencies-empty">
+      <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto border border-emerald-100">
+        <CheckCircle className="w-6 h-6" />
+      </div>
+      <div className="space-y-1">
+        <h4 className="font-extrabold text-sm text-[#201A17]">Tudo certo por aqui!</h4>
+        <p className="text-xs text-[#756B66] max-w-md mx-auto leading-relaxed">
+          Sua operação está configurada e não há ações pendentes no momento.
+        </p>
+      </div>
+    </div>
+  );
+
+  const renderSkeletonState = () => (
+    <div className="bg-white rounded-3xl border border-[#EADFD8] p-6 shadow-sm space-y-4" id="merchant-pendencies-loading">
+      <div className="flex justify-between items-center pb-2 border-b border-[#F7F4EF]">
+        <div className="h-5 w-40 bg-gray-200 rounded-md animate-pulse" />
+        <div className="h-6 w-12 bg-gray-200 rounded-full animate-pulse" />
+      </div>
+      <div className="space-y-3">
+        {[1, 2, 3].map(i => (
+          <div key={i} className="p-4 rounded-2xl border border-gray-100 bg-gray-50 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-pulse">
+            <div className="flex items-start gap-3 w-full">
+              <div className="p-2 bg-gray-200 rounded-xl w-9 h-9 shrink-0" />
+              <div className="space-y-2 w-full">
+                <div className="flex gap-2">
+                  <div className="h-4 w-32 bg-gray-200 rounded-md" />
+                  <div className="h-4 w-16 bg-gray-200 rounded-full" />
+                </div>
+                <div className="h-3 w-2/3 bg-gray-200 rounded-md" />
+              </div>
+            </div>
+            <div className="h-8 w-24 bg-gray-200 rounded-xl self-end md:self-center" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderErrorState = () => (
+    <div className="bg-white rounded-3xl border border-[#EADFD8] p-8 text-center space-y-4" id="merchant-pendencies-error">
+      <div className="w-12 h-12 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto border border-rose-100">
+        <AlertCircle className="w-6 h-6" />
+      </div>
+      <div className="space-y-1">
+        <h4 className="font-extrabold text-sm text-[#201A17]">Não foi possível verificar todas as pendências.</h4>
+        <p className="text-xs text-[#756B66] max-w-md mx-auto leading-relaxed">
+          Ocorreu um erro ao carregar os dados operacionais da loja. Por favor, tente novamente.
+        </p>
+      </div>
+      <button
+        onClick={handleRetryPendencies}
+        className="bg-[#201A17] hover:bg-[#E94F2F] text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-2 mx-auto"
+      >
+        <RefreshCw className="w-4 h-4" />
+        <span>Tentar novamente</span>
+      </button>
+    </div>
+  );
+
   return (
     <div className="bg-[#F7F4EF] min-h-screen pb-16 text-[#201A17]" id="merchant-panel-wrapper">
       
@@ -1221,60 +1932,104 @@ export const EstablishmentArea: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-0 bg-[#F7F4EF] rounded-2xl border border-[#EADFD8] w-full overflow-hidden">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-0 bg-[#F7F4EF] rounded-2xl border border-[#EADFD8] w-full overflow-hidden" id="merchant-operational-indicators">
             {/* Control 1: Loja aberta / fechada */}
-            <div className="flex items-center justify-between gap-2 border-r border-b md:border-b-0 border-[#EADFD8] p-3 min-w-0">
+            <div className="flex items-center justify-between gap-2 border-r border-b md:border-b-0 border-[#EADFD8] p-3 min-w-0" id="indicator-store-status">
               <div className="text-left min-w-0">
                 <p className="text-[10px] text-[#756B66] font-black uppercase leading-tight truncate">Loja</p>
-                <p className={`text-[14px] font-black leading-tight truncate ${(currentMerchant.open !== undefined ? currentMerchant.open : currentMerchant.isOpen) ? 'text-[#2F9E69]' : 'text-rose-500'}`}>
-                  {(currentMerchant.open !== undefined ? currentMerchant.open : currentMerchant.isOpen) ? 'Aberta' : 'Fechada'}
+                <p className={`text-[14px] font-black leading-tight truncate ${operationalState.storeStatus === 'open' ? 'text-[#2F9E69]' : 'text-rose-500'}`}>
+                  {operationalState.storeStatus === 'open' ? 'Aberta' : 'Fechada'}
                 </p>
               </div>
               <button
                 onClick={toggleOpen}
-                className={`p-1.5 rounded-lg transition-all shrink-0 ${(currentMerchant.open !== undefined ? currentMerchant.open : currentMerchant.isOpen) ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'}`}
-                title={(currentMerchant.open !== undefined ? currentMerchant.open : currentMerchant.isOpen) ? 'Fechar Loja' : 'Abrir Loja'}
+                disabled={isStatusUpdating}
+                className={`p-1.5 rounded-lg transition-all shrink-0 disabled:opacity-50 disabled:pointer-events-none ${operationalState.storeStatus === 'open' ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'}`}
+                title={operationalState.storeStatus === 'open' ? 'Fechar Loja' : 'Abrir Loja'}
+                aria-label={operationalState.storeStatus === 'open' ? 'Fechar Loja' : 'Abrir Loja'}
               >
-                <Power className="w-4 h-4" />
+                {isStatusUpdating ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Power className="w-4 h-4" aria-hidden="true" />
+                )}
               </button>
             </div>
 
             {/* Control 2: Aceitando Pedidos */}
-            <div className="flex items-center justify-between gap-2 border-b md:border-r border-[#EADFD8] p-3 min-w-0">
+            <div className="flex items-center justify-between gap-2 border-b md:border-r border-[#EADFD8] p-3 min-w-0" id="indicator-orders-status">
               <div className="text-left min-w-0">
                 <p className="text-[10px] text-[#756B66] font-black uppercase leading-tight truncate">Pedidos</p>
-                <p className={`text-[14px] font-black leading-tight truncate ${(currentMerchant.acceptingOrders !== false) ? 'text-[#2F9E69]' : 'text-rose-500'}`}>
-                  {(currentMerchant.acceptingOrders !== false) ? 'Aceitando' : 'Recusando'}
+                <p className={`text-[14px] font-black leading-tight truncate ${
+                  operationalState.ordersStatus === 'accepting' 
+                    ? 'text-[#2F9E69]' 
+                    : operationalState.ordersStatus === 'paused' 
+                      ? 'text-amber-600' 
+                      : 'text-[#756B66]'
+                }`}>
+                  {operationalState.ordersStatus === 'accepting' 
+                    ? 'Aceitando' 
+                    : operationalState.ordersStatus === 'paused' 
+                      ? 'Pausados' 
+                      : 'Indisponíveis'}
                 </p>
               </div>
               <button
                 onClick={toggleAcceptingOrders}
-                className={`p-1.5 rounded-lg transition-all shrink-0 ${(currentMerchant.acceptingOrders !== false) ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'}`}
+                disabled={isStatusUpdating}
+                className={`p-1.5 rounded-lg transition-all shrink-0 disabled:opacity-50 disabled:pointer-events-none ${
+                  (currentMerchant.acceptingOrders !== false) 
+                    ? 'bg-rose-100 text-rose-600 hover:bg-rose-200' 
+                    : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'
+                }`}
                 title={(currentMerchant.acceptingOrders !== false) ? 'Bloquear Pedidos' : 'Aceitar Pedidos'}
+                aria-label={(currentMerchant.acceptingOrders !== false) ? 'Bloquear Pedidos' : 'Aceitar Pedidos'}
               >
-                <CheckCircle className="w-4 h-4" />
+                {isStatusUpdating ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <CheckCircle className="w-4 h-4" aria-hidden="true" />
+                )}
               </button>
             </div>
 
             {/* Control 3: Pausa temporária */}
-            <div className="flex items-center justify-between gap-2 border-r md:border-r-0 border-[#EADFD8] p-3 min-w-0">
+            <div className="flex items-center justify-between gap-2 border-r md:border-r-0 border-[#EADFD8] p-3 min-w-0" id="indicator-pause-status">
               <div className="text-left min-w-0">
                 <p className="text-[10px] text-[#756B66] font-black uppercase leading-tight truncate">Pausa</p>
-                <p className={`text-[14px] font-black leading-tight truncate ${currentMerchant.temporarilyPaused ? 'text-amber-600' : 'text-[#756B66]'}`}>
-                  {currentMerchant.temporarilyPaused ? 'Pausado' : 'Ativo'}
+                <p className={`text-[14px] font-black leading-tight truncate ${operationalState.pauseStatus === 'active' ? 'text-amber-600' : 'text-[#756B66]'}`}>
+                  {operationalState.pauseStatus === 'active' 
+                    ? (operationalState.pauseEndsAt 
+                        ? (() => {
+                            const hh = String(operationalState.pauseEndsAt.getHours()).padStart(2, '0');
+                            const mm = String(operationalState.pauseEndsAt.getMinutes()).padStart(2, '0');
+                            return `Retoma às ${hh}:${mm}`;
+                          })()
+                        : 'Ativada') 
+                    : 'Sem pausa'}
                 </p>
               </div>
               <button
                 onClick={toggleTemporarilyPaused}
-                className={`p-1.5 rounded-lg transition-all shrink-0 ${currentMerchant.temporarilyPaused ? 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200' : 'bg-amber-100 text-amber-600 hover:bg-amber-200'}`}
-                title={currentMerchant.temporarilyPaused ? 'Remover Pausa' : 'Pausar Temporariamente'}
+                disabled={isStatusUpdating}
+                className={`p-1.5 rounded-lg transition-all shrink-0 disabled:opacity-50 disabled:pointer-events-none ${
+                  operationalState.pauseStatus === 'active' 
+                    ? 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200' 
+                    : 'bg-amber-100 text-amber-600 hover:bg-amber-200'
+                }`}
+                title={operationalState.pauseStatus === 'active' ? 'Remover Pausa' : 'Pausar Temporariamente'}
+                aria-label={operationalState.pauseStatus === 'active' ? 'Remover Pausa' : 'Pausar Temporariamente'}
               >
-                <Clock className="w-4 h-4" />
+                {isStatusUpdating ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Clock className="w-4 h-4" aria-hidden="true" />
+                )}
               </button>
             </div>
             
             {/* Control 4: Som (mobile only) */}
-            <div className="md:hidden flex items-center justify-between gap-2 border-t border-[#EADFD8] p-3 min-w-0">
+            <div className="md:hidden flex items-center justify-between gap-2 border-t border-[#EADFD8] p-3 min-w-0" id="indicator-sound-control">
                <NotificationSoundControl showLabel={true} />
             </div>
           </div>
@@ -1305,8 +2060,9 @@ export const EstablishmentArea: React.FC = () => {
                 { id: 'geral', label: 'Visão Geral', icon: TrendingUp },
                 { id: 'financeiro', label: 'Painel Financeiro', icon: DollarSign },
                 { id: 'pedidos', label: 'Pedidos', icon: ShoppingBag, badge: stats.waiting },
-                { id: 'cardapio', label: 'Cardápio', icon: List },
+                { id: 'cardapio', label: 'Catálogo', icon: List },
                 { id: 'horarios', label: 'Horários de Funcionamento', icon: Clock },
+                { id: 'avaliacoes', label: 'Avaliações', icon: Star },
                 { id: 'notificacoes', label: 'Notificações', icon: Bell },
                 { id: 'entregas', label: 'Entregas e taxas', icon: Truck },
               ].map((tab) => {
@@ -1408,6 +2164,58 @@ export const EstablishmentArea: React.FC = () => {
                     <p className="text-[10px] text-[#756B66] font-bold">Estimativa da cozinha</p>
                   </div>
                 </div>
+
+                {/* -------------------- CENTRAL DE PENDÊNCIAS OPERACIONAIS -------------------- */}
+                {pendenciesError ? (
+                  renderErrorState()
+                ) : (zonesLoading || isRetryingPendencies) ? (
+                  renderSkeletonState()
+                ) : (
+                  <div className="bg-white rounded-3xl border border-[#EADFD8] p-6 shadow-sm space-y-4" id="merchant-operational-pendencies-section">
+                    <div className="flex items-center justify-between pb-2 border-b border-[#F7F4EF]">
+                      <div className="space-y-0.5 text-left">
+                        <h3 className="font-extrabold text-sm text-[#201A17] flex items-center gap-2">
+                          <span>Atenção necessária</span>
+                          {pendencies.length > 0 && (
+                            <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${
+                              pendencies.some(p => p.priority === 'critica') ? 'bg-rose-100 text-rose-700' : 'bg-[#E94F2F]/10 text-[#E94F2F]'
+                            }`}>
+                              {pendencies.length}
+                            </span>
+                          )}
+                        </h3>
+                        <p className="text-[11px] text-[#756B66] font-semibold">
+                          {pendencies.some(p => p.priority === 'critica') 
+                            ? `${pendencies.filter(p => p.priority === 'critica').length} item(ns) crítico(s) exige(m) ação imediata.`
+                            : "Confira o que precisa de ação na sua operação."}
+                        </p>
+                      </div>
+                    </div>
+
+                    {pendencies.length === 0 ? (
+                      renderEmptyState()
+                    ) : (
+                      <div className="space-y-3 text-left">
+                        {pendencies.slice(0, 5).map(p => renderPendencyItem(p))}
+                        
+                        {pendencies.length > 5 && (
+                          <div className="pt-2 text-center">
+                            <button
+                              onClick={() => {
+                                setPendencyFilter('todas');
+                                setIsAllPendenciesModalOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs font-black text-[#E94F2F] hover:text-[#BD351C] transition-all bg-[#E94F2F]/5 px-4 py-2 rounded-xl"
+                            >
+                              <span>Ver todas as {pendencies.length} pendências</span>
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Section Recent Activity requested in 2. PAINEL DO ESTABELECIMENTO */}
                 <div className="bg-white rounded-3xl border border-[#EADFD8] p-6 shadow-sm space-y-4">
@@ -2042,9 +2850,14 @@ export const EstablishmentArea: React.FC = () => {
                             </button>
                             <button
                               onClick={() => handleUpdateOrderStatus(order.id, 'concluido')}
-                              className="px-5 py-2.5 bg-[#2F9E69] hover:bg-emerald-700 text-white rounded-xl font-bold text-xs transition-colors"
+                              disabled={updatingOrders[order.id]}
+                              className={`px-5 py-2.5 rounded-xl font-bold text-xs transition-colors ${
+                                updatingOrders[order.id]
+                                  ? 'bg-emerald-600/50 cursor-not-allowed text-emerald-100'
+                                  : 'bg-[#2F9E69] hover:bg-emerald-700 text-white'
+                              }`}
                             >
-                              Concluir pedido
+                              {updatingOrders[order.id] ? 'Concluindo...' : 'Concluir pedido'}
                             </button>
                           </div>
                         </div>
@@ -2200,7 +3013,7 @@ export const EstablishmentArea: React.FC = () => {
               </motion.div>
             )}
 
-            {/* -------------------- TAB: GERENCIAR CARDÁPIO (Cardápio) -------------------- */}
+            {/* -------------------- TAB: GERENCIAR CATÁLOGO (Cardápio) -------------------- */}
             {activeTab === 'cardapio' && (
               <motion.div
                 initial={{ opacity: 0 }}
@@ -2227,7 +3040,7 @@ export const EstablishmentArea: React.FC = () => {
                         : 'border-transparent text-[#756B66] hover:text-[#201A17]'
                     }`}
                   >
-                    Categorias do Cardápio
+                    Categorias do Catálogo
                   </button>
                 </div>
 
@@ -2235,7 +3048,7 @@ export const EstablishmentArea: React.FC = () => {
                   <div className="space-y-6">
                     <div className="flex justify-between items-center bg-white p-4 rounded-2xl border border-[#EADFD8]">
                       <div>
-                        <h3 className="font-extrabold text-base text-[#201A17]">Categorias do Cardápio ({(menuCategories[merchantId] || []).length})</h3>
+                        <h3 className="font-extrabold text-base text-[#201A17]">Categorias do Catálogo ({(menuCategories[merchantId] || []).length})</h3>
                         <p className="text-xs text-[#756B66]">Crie e ordene categorias exclusivas para seu estabelecimento</p>
                       </div>
 
@@ -2393,7 +3206,11 @@ export const EstablishmentArea: React.FC = () => {
                                       <Edit2 className="w-3.5 h-3.5" />
                                     </button>
                                     <button
-                                      onClick={() => handleDeleteProductClick(p.id)}
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        handleDeleteProductClick(p);
+                                      }}
                                       className="p-1.5 rounded-lg border border-rose-200 text-rose-600 hover:text-white hover:bg-rose-600"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
@@ -2557,18 +3374,28 @@ export const EstablishmentArea: React.FC = () => {
                         </thead>
                         <tbody className="divide-y divide-[#F7F4EF]">
                           {filteredDeliveryZones.map((zone) => {
-                            const totalEstimatedMinutes = (currentMerchant.baseEstimatedMinutes || 30) + (zone.additionalEstimatedMinutes || 0);
                             return (
                               <tr key={zone.neighborhoodId} className="hover:bg-[#F7F4EF]/20 text-xs font-bold text-[#201A17] transition-all">
                                 <td className="py-3.5 px-2 font-black">{zone.neighborhoodName}</td>
                                 <td className="py-3.5 px-2 text-[#2F9E69]">R$ {zone.deliveryFee.toFixed(2).replace('.', ',')}</td>
                                 <td className="py-3.5 px-2">
-                                  <div className="flex items-center gap-1">
-                                    <Clock3 className="w-3.5 h-3.5 text-[#756B66]" />
-                                    <span>{totalEstimatedMinutes} min</span>
-                                    {zone.additionalEstimatedMinutes > 0 && (
-                                      <span className="text-[10px] font-medium text-[#E94F2F]">(+{zone.additionalEstimatedMinutes}m)</span>
-                                    )}
+                                  <div className="flex flex-col gap-0.5 justify-center">
+                                    <div className="flex items-center gap-1">
+                                      <Clock3 className="w-3.5 h-3.5 text-[#756B66]" />
+                                      <span className="font-extrabold text-xs">
+                                        {currentMerchant.baseEstimatedMinutes !== undefined 
+                                          ? `${Number(currentMerchant.baseEstimatedMinutes) + (zone.additionalEstimatedMinutes || 0)} min`
+                                          : `${30 + (zone.additionalEstimatedMinutes || 0)} min`
+                                        }
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] text-[#756B66] font-normal leading-tight">
+                                      {currentMerchant.baseEstimatedMinutes !== undefined ? (
+                                        `${currentMerchant.baseEstimatedMinutes} min de preparo + ${zone.additionalEstimatedMinutes || 0} min adicionais`
+                                      ) : (
+                                        `Sem tempo de preparo definido`
+                                      )}
+                                    </span>
                                   </div>
                                 </td>
                                 <td className="py-3.5 px-2">
@@ -2709,9 +3536,15 @@ export const EstablishmentArea: React.FC = () => {
                                     step="0.01"
                                     disabled={isFormDisabled}
                                     value={zoneFee}
-                                    onChange={(e) => setZoneFee(parseFloat(e.target.value) || 0)}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setZoneFee(val === "" ? 0 : parseFloat(val));
+                                    }}
                                     className={`w-full p-2.5 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 ${isFormDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white text-[#201A17]'}`}
                                   />
+                                  {zoneFee === 0 && (
+                                    <p className="text-[10px] text-emerald-600 font-bold mt-1">Entrega gratuita nesta área</p>
+                                  )}
                                 </div>
 
                                 {/* Campo Pedido Mínimo */}
@@ -2744,7 +3577,11 @@ export const EstablishmentArea: React.FC = () => {
                                     className={`w-full p-2.5 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 ${isFormDisabled ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-white text-[#201A17]'}`}
                                   />
                                   <p className="text-[10px] text-gray-400 font-medium leading-tight">
-                                    {currentMerchant.baseEstimatedMinutes || 30} min da loja + {zoneAdditionalMinutes} min do bairro = {(currentMerchant.baseEstimatedMinutes || 30) + zoneAdditionalMinutes} min total.
+                                    {currentMerchant.baseEstimatedMinutes !== undefined ? (
+                                      `${currentMerchant.baseEstimatedMinutes} min de preparo + ${zoneAdditionalMinutes} min adicionais = ${Number(currentMerchant.baseEstimatedMinutes) + zoneAdditionalMinutes} min total.`
+                                    ) : (
+                                      `Sem tempo de preparo definido (exemplo: 30 min de preparo + ${zoneAdditionalMinutes} min adicionais = ${30 + zoneAdditionalMinutes} min total)`
+                                    )}
                                   </p>
                                 </div>
 
@@ -2789,6 +3626,116 @@ export const EstablishmentArea: React.FC = () => {
                     </div>
                   )}
                 </AnimatePresence>
+
+                {/* TEMPO DE PREPARO BASE / ESTIMADO DA LOJA */}
+                <div className="bg-white rounded-3xl border border-[#EADFD8] p-6 shadow-sm space-y-6">
+                  <div>
+                    <h3 className="font-extrabold text-base text-[#201A17]">Tempo de preparo do estabelecimento</h3>
+                    <p className="text-xs text-[#756B66] mt-0.5">Defina o tempo médio necessário para preparar um pedido. O tempo adicional de cada bairro será somado automaticamente para calcular a estimativa total.</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                    <div className="space-y-2">
+                      <label className="text-xs font-black text-[#756B66] uppercase tracking-wider block">Tempo de preparo do pedido (Minutos)</label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          required
+                          min="1"
+                          placeholder="Ex: 30"
+                          value={baseEstimatedMinutes !== undefined ? baseEstimatedMinutes : ''}
+                          onChange={(e) => setBaseEstimatedMinutes(e.target.value === '' ? undefined : Math.max(1, parseInt(e.target.value) || 1))}
+                          className="w-full max-w-[150px] p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-[#F7F4EF]/30 font-extrabold text-sm text-[#201A17]"
+                        />
+                        <span className="text-xs font-bold text-[#756B66]">minutos</span>
+                      </div>
+                      <p className="text-[10px] text-gray-400 font-semibold leading-tight">
+                        Exemplo: Se o tempo de preparo for de {baseEstimatedMinutes || 30} min e o tempo adicional de um bairro for de 15 min, o cliente verá {(baseEstimatedMinutes || 30) + 15} min como estimativa total.
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-[#F7F4EF]/40 rounded-2xl border border-[#EADFD8]/40 text-[#201A17] text-xs space-y-2.5 font-medium">
+                      <p className="font-extrabold text-xs text-[#E94F2F] flex items-center gap-1">
+                        <CheckCircle className="w-4 h-4 shrink-0" />
+                        Como a estimativa é calculada:
+                      </p>
+                      <p className="text-[11px] text-[#756B66] leading-tight mb-1">
+                        Somamos o tempo de preparo ao tempo adicional definido para cada bairro.
+                      </p>
+                      
+                      {zonesLoading ? (
+                        <div className="flex items-center gap-2 text-[11px] text-[#756B66] py-1">
+                          <RefreshCw className="w-3.5 h-3.5 text-[#E94F2F] animate-spin" />
+                          <span>Carregando estimativas...</span>
+                        </div>
+                      ) : baseEstimatedMinutes === undefined ? (
+                        <p className="text-[11px] text-amber-600 font-bold bg-amber-50 p-2 rounded-lg border border-amber-200">
+                          Defina o tempo de preparo para calcular a estimativa total das entregas.
+                        </p>
+                      ) : deliveryZones.length === 0 ? (
+                        <p className="text-[11px] text-[#756B66] italic bg-gray-50 p-2 rounded-lg border border-gray-200">
+                          Cadastre uma área de entrega para visualizar a estimativa completa.
+                        </p>
+                      ) : (
+                        <div className="space-y-3">
+                          {deliveryZones.slice(0, 3).map((zone) => {
+                            const additional = zone.additionalEstimatedMinutes || 0;
+                            const total = calculateEstimatedTotalMinutes(baseEstimatedMinutes, additional);
+                            return (
+                              <div key={zone.neighborhoodId} className="border-b border-[#EADFD8]/40 pb-2.5 last:border-0 last:pb-0">
+                                <p className="font-extrabold text-xs text-[#201A17]">{zone.neighborhoodName}</p>
+                                <div className="grid grid-cols-1 pl-2 mt-1 gap-0.5 text-[11px] text-[#756B66]">
+                                  <p>Tempo de preparo: <span className="font-bold text-[#201A17]">{baseEstimatedMinutes} min</span></p>
+                                  <p>Tempo adicional do bairro: <span className="font-bold text-[#201A17]">{additional} min</span></p>
+                                  <p className="font-bold text-[#2F9E69]">Estimativa para o cliente: {total} min</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {deliveryZones.length > 3 && (
+                            <p className="text-[10px] text-gray-400 font-bold italic text-right pt-1">
+                              Ver todas as estimativas (exibindo 3 de {deliveryZones.length})
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t border-[#F7F4EF] flex justify-end">
+                    <button
+                      onClick={async () => {
+                        if (baseEstimatedMinutes === undefined) {
+                          showToast('Por favor, defina o tempo de preparo do pedido.', 'error');
+                          return;
+                        }
+                        const updatedMerchant = {
+                          ...currentMerchant,
+                          baseEstimatedMinutes,
+                          deliveryTimeMin: baseEstimatedMinutes, // ensure synced
+                          deliveryTime: `${baseEstimatedMinutes}-${baseEstimatedMinutes + 15} min`
+                        };
+                        try {
+                          const isDemoMode = typeof window !== 'undefined' && localStorage.getItem('pl_catalog_data_source') !== 'firestore';
+                          if (!isDemoMode) {
+                            await establishmentsRepository.saveEstablishment(updatedMerchant);
+                          }
+                          setEstablishments(prev =>
+                            prev.map(e => e.id === merchantId ? updatedMerchant : e)
+                          );
+                          showToast('Tempo de preparo salvo com sucesso!', 'success');
+                        } catch (error) {
+                          console.error("Erro ao salvar tempo de preparo:", error);
+                          showToast('Erro ao atualizar o tempo de preparo.', 'error');
+                        }
+                      }}
+                      className="bg-[#201A17] hover:bg-[#E94F2F] text-white px-5 py-2.5 rounded-xl font-bold text-xs flex items-center gap-2"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>Salvar tempo de preparo</span>
+                    </button>
+                  </div>
+                </div>
 
                 {/* CONFIGURAÇÃO DE PAGAMENTO ACEITO */}
                 <div className="bg-white rounded-3xl border border-[#EADFD8] p-6 shadow-sm space-y-6">
@@ -2876,8 +3823,8 @@ export const EstablishmentArea: React.FC = () => {
                         <label className="flex items-center gap-3 text-xs font-bold text-[#201A17] cursor-pointer bg-[#F7F4EF]/50 p-3 rounded-xl border border-transparent hover:border-[#EADFD8] transition-all">
                           <input
                             type="checkbox"
-                            checked={acceptDeliveryPayment}
-                            onChange={(e) => setAcceptDeliveryPayment(e.target.checked)}
+                            checked={acceptsDelivery}
+                            onChange={(e) => setAcceptsDelivery(e.target.checked)}
                             className="w-4 h-4 accent-[#E94F2F] cursor-pointer"
                           />
                           <div className="flex-1">
@@ -2889,8 +3836,8 @@ export const EstablishmentArea: React.FC = () => {
                         <label className="flex items-center gap-3 text-xs font-bold text-[#201A17] cursor-pointer bg-[#F7F4EF]/50 p-3 rounded-xl border border-transparent hover:border-[#EADFD8] transition-all">
                           <input
                             type="checkbox"
-                            checked={acceptPickupPayment}
-                            onChange={(e) => setAcceptPickupPayment(e.target.checked)}
+                            checked={acceptsPickup}
+                            onChange={(e) => setAcceptsPickup(e.target.checked)}
                             className="w-4 h-4 accent-[#E94F2F] cursor-pointer"
                           />
                           <div className="flex-1">
@@ -2977,9 +3924,100 @@ export const EstablishmentArea: React.FC = () => {
               </motion.div>
             )}
 
+            {/* -------------------- TAB: AVALIACOES -------------------- */}
+            {activeTab === 'avaliacoes' && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-6"
+              >
+                <MerchantReviews 
+                  establishmentId={merchantId} 
+                  merchantName={currentMerchant?.name || 'Estabelecimento'} 
+                />
+              </motion.div>
+            )}
+
           </div>
         </div>
       </div>
+
+      {/* -------------------- PAUSE DURATION SELECTION MODAL -------------------- */}
+      <AnimatePresence>
+        {isPauseDurationModalOpen && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" id="merchant-pause-duration-modal">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl max-w-sm w-full shadow-2xl overflow-hidden border border-[#EADFD8]"
+            >
+              <div className="p-5 border-b border-[#EADFD8] flex justify-between items-center bg-[#F7F4EF]">
+                <h3 className="font-extrabold text-lg text-[#201A17] flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-[#E94F2F]" />
+                  <span>Duração da Pausa</span>
+                </h3>
+                <button 
+                  onClick={() => setIsPauseDurationModalOpen(false)} 
+                  className="text-[#756B66] hover:text-[#201A17]"
+                  aria-label="Fechar"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-6 space-y-3">
+                <p className="text-xs text-[#756B66] font-semibold leading-relaxed">
+                  Selecione por quanto tempo deseja pausar o recebimento de novos pedidos. Após o tempo selecionado, a pausa será desativada automaticamente.
+                </p>
+
+                <div className="space-y-2 pt-2">
+                  <button
+                    onClick={() => handleSelectPauseDuration(30)}
+                    className="w-full p-3 text-left rounded-xl border border-[#EADFD8] hover:bg-[#F7F4EF] hover:border-[#E94F2F]/40 transition-all font-bold text-xs text-[#201A17] flex justify-between items-center"
+                  >
+                    <span>30 Minutos</span>
+                    <span className="text-[10px] text-[#756B66] font-semibold bg-[#F7F4EF] px-2 py-0.5 rounded-lg border border-[#EADFD8]">Retoma rápido</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSelectPauseDuration(60)}
+                    className="w-full p-3 text-left rounded-xl border border-[#EADFD8] hover:bg-[#F7F4EF] hover:border-[#E94F2F]/40 transition-all font-bold text-xs text-[#201A17] flex justify-between items-center"
+                  >
+                    <span>1 Hora</span>
+                    <span className="text-[10px] text-[#756B66] font-semibold bg-[#F7F4EF] px-2 py-0.5 rounded-lg border border-[#EADFD8]">Mais comum</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSelectPauseDuration(120)}
+                    className="w-full p-3 text-left rounded-xl border border-[#EADFD8] hover:bg-[#F7F4EF] hover:border-[#E94F2F]/40 transition-all font-bold text-xs text-[#201A17] flex justify-between items-center"
+                  >
+                    <span>2 Horas</span>
+                    <span className="text-[10px] text-[#756B66] font-semibold bg-[#F7F4EF] px-2 py-0.5 rounded-lg border border-[#EADFD8]">Horário de pico</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSelectPauseDuration(null)}
+                    className="w-full p-3 text-left rounded-xl border border-[#EADFD8] hover:bg-amber-50 hover:border-amber-300 transition-all font-bold text-xs text-[#201A17] flex justify-between items-center"
+                  >
+                    <span className="text-amber-800">Tempo Indeterminado</span>
+                    <span className="text-[10px] text-amber-700 font-semibold bg-amber-100/50 px-2 py-0.5 rounded-lg border border-amber-200">Requer reativação manual</span>
+                  </button>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-4 border-t border-[#F7F4EF] mt-4">
+                  <button
+                    onClick={() => setIsPauseDurationModalOpen(false)}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-[#756B66] rounded-xl font-bold text-xs"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* -------------------- CREATE/EDIT CATEGORY MODAL -------------------- */}
       <AnimatePresence>
@@ -3035,7 +4073,7 @@ export const EstablishmentArea: React.FC = () => {
                     className="w-4 h-4 rounded text-[#E94F2F] border-[#EADFD8] focus:ring-[#E94F2F]"
                   />
                   <label htmlFor="chk-cat-active" className="text-xs font-bold text-[#201A17] cursor-pointer select-none">
-                    Categoria Ativa (Exibir no cardápio público se houver produtos)
+                    Categoria Ativa (Exibir no catálogo público se houver produtos)
                   </label>
                 </div>
 
@@ -3110,7 +4148,7 @@ export const EstablishmentArea: React.FC = () => {
                     <p className="font-bold">Aviso importante:</p>
                     <p className="font-medium text-xs leading-relaxed">
                       Esta categoria possui <strong>{productsLinkedToCat.length} produtos</strong> vinculados a ela. 
-                      Se você confirmar a exclusão, esses produtos não serão excluídos, mas ficarão sem categoria e deixarão de aparecer no cardápio do cliente até que você os readequar para uma nova categoria.
+                      Se você confirmar a exclusão, esses produtos não serão excluídos, mas ficarão sem categoria e deixarão de aparecer no catálogo do cliente até que você os readequar para uma nova categoria.
                     </p>
                     <ul className="list-disc pl-4 text-[11px] font-semibold space-y-0.5">
                       {productsLinkedToCat.slice(0, 3).map(p => (
@@ -3169,6 +4207,161 @@ export const EstablishmentArea: React.FC = () => {
         )}
       </AnimatePresence>
 
+      {/* -------------------- DELETE PRODUCT CONFIRMATION MODAL -------------------- */}
+      <AnimatePresence>
+        {productToDelete && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50" id="merchant-product-delete-modal">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-[#EADFD8]"
+            >
+              <div className="p-5 border-b border-[#EADFD8] bg-rose-50 flex items-center gap-2">
+                <AlertCircle className="w-6 h-6 text-rose-600 shrink-0" />
+                <h3 className="font-extrabold text-base text-[#201A17]">
+                  Excluir Produto
+                </h3>
+              </div>
+
+              <div className="p-6 space-y-4 text-xs font-semibold text-[#201A17]">
+                <p className="text-sm font-medium text-[#756B66] leading-relaxed">
+                  Você tem certeza que deseja excluir o produto <strong className="text-[#201A17]">"{productToDelete.name}"</strong>?
+                </p>
+                
+                <p className="text-[#756B66] font-medium leading-relaxed">
+                  Tem certeza de que deseja excluir este produto? Essa ação não poderá ser desfeita.
+                </p>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    disabled={isDeletingProduct}
+                    onClick={() => {
+                      setProductToDelete(null);
+                    }}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-[#756B66] rounded-xl font-bold text-xs disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeletingProduct}
+                    onClick={async () => {
+                      if (isDeletingProduct) return;
+                      
+                      // 1. Validar se existe um usuário autenticado.
+                      if (!isAuthenticated || !currentUser) {
+                        showToast('Não foi possível excluir o produto. Usuário não autenticado.', 'error');
+                        return;
+                      }
+
+                      // 2. Validar se o usuário possui vínculo com o estabelecimento atual.
+                      const hasVinculo = userProfile?.role === 'admin' || authEstId === merchantId;
+                      if (!hasVinculo) {
+                        showToast('Acesso negado. Você não possui vínculo com este estabelecimento.', 'error');
+                        return;
+                      }
+
+                      // 3. Validar se o produto pertence ao estabelecimento atual.
+                      if (productToDelete.establishmentId !== merchantId) {
+                        showToast('Este produto não pertence a este estabelecimento.', 'error');
+                        return;
+                      }
+
+                      setIsDeletingProduct(true);
+                      try {
+                        // 4. Utilizar o ID real do documento Firestore.
+                        // 5. Executar a exclusão no caminho correto do Firestore.
+                        await deleteProduct(merchantId, productToDelete.id);
+                        showToast('Produto excluído com sucesso.', 'success');
+                        setProductToDelete(null);
+                      } catch (err: any) {
+                        showToast('Não foi possível excluir o produto. Tente novamente.', 'error');
+                        
+                        // Registrar no console o erro técnico completo contendo:
+                        // - código do erro;
+                        // - mensagem do erro;
+                        // - ID do produto;
+                        // - ID do estabelecimento;
+                        // - caminho Firestore utilizado.
+                        console.error("ERRO COMPLETO DE EXCLUSÃO DE PRODUTO:", {
+                          code: err.code || "unknown_code",
+                          message: err.message || "Unknown error occurred",
+                          productId: productToDelete.id,
+                          establishmentId: merchantId,
+                          firestorePath: `products/${productToDelete.id}`
+                        });
+                      } finally {
+                        setIsDeletingProduct(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    {isDeletingProduct ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Excluindo...</span>
+                      </>
+                    ) : (
+                      <span>Excluir produto</span>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* -------------------- DELETE OPTION GROUP CONFIRMATION MODAL -------------------- */}
+      <AnimatePresence>
+        {groupToDelete && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-[60]" id="merchant-option-group-delete-modal">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden border border-[#EADFD8]"
+            >
+              <div className="p-5 border-b border-[#EADFD8] bg-rose-50 flex items-center gap-2">
+                <AlertCircle className="w-6 h-6 text-rose-600 shrink-0" />
+                <h3 className="font-extrabold text-base text-[#201A17]">
+                  Excluir grupo “{groupToDelete.name || 'Sem nome'}”?
+                </h3>
+              </div>
+
+              <div className="p-6 space-y-4 text-xs font-semibold text-[#201A17]">
+                <p className="text-sm font-medium text-[#756B66] leading-relaxed">
+                  As opções cadastradas nesse grupo também serão removidas deste produto.
+                </p>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGroupToDelete(null);
+                    }}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-[#756B66] rounded-xl font-bold text-xs cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      confirmDeleteOptionGroup();
+                    }}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs cursor-pointer"
+                  >
+                    Excluir grupo
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* -------------------- CREATE/EDIT PRODUCT FORM MODAL -------------------- */}
       <AnimatePresence>
         {isProductModalOpen && (
@@ -3203,7 +4396,7 @@ export const EstablishmentArea: React.FC = () => {
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-[#756B66] uppercase">Descrição do cardápio *</label>
+                  <label className="text-[10px] font-black text-[#756B66] uppercase">Descrição do catálogo *</label>
                   <textarea
                     required
                     placeholder="Ex: Deliciosa muçarela de búfala, manjericão fresco picado..."
@@ -3330,6 +4523,169 @@ export const EstablishmentArea: React.FC = () => {
                   </label>
                 </div>
 
+                {/* PRODUCT CHARACTERISTICS SECTION */}
+                <div className="bg-white rounded-2xl border border-[#EADFD8] p-4 space-y-4 shadow-xs text-left">
+                  <div className="border-b border-[#F7F4EF] pb-3">
+                    <h4 className="font-extrabold text-xs text-[#201A17] uppercase tracking-wider">Características do produto</h4>
+                    <p className="text-[9px] text-[#756B66] font-semibold mt-0.5">
+                      Selecione somente características que realmente se aplicam a este produto.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {/* Control 1: Feito na hora */}
+                    <div className="flex items-start gap-3 bg-[#FAF8F5] p-3 rounded-xl border border-[#EADFD8]/60 hover:border-[#E94F2F]/30 transition-colors">
+                      <input
+                        type="checkbox"
+                        id="chk-prod-prepared"
+                        checked={prodPreparedToOrder}
+                        onChange={() => setProdPreparedToOrder(!prodPreparedToOrder)}
+                        className="w-4.5 h-4.5 accent-[#E94F2F] cursor-pointer mt-0.5 focus-visible:ring-2 focus-visible:ring-[#E94F2F]"
+                      />
+                      <label htmlFor="chk-prod-prepared" className="cursor-pointer select-none flex-1">
+                        <span className="text-xs font-bold text-[#201A17] block">Feito na hora</span>
+                        <span className="text-[9px] text-[#756B66] font-semibold leading-normal block mt-0.5">
+                          O produto é preparado após o cliente realizar o pedido.
+                        </span>
+                      </label>
+                    </div>
+
+                    {/* Control 2: Ingredientes frescos */}
+                    <div className="flex items-start gap-3 bg-[#FAF8F5] p-3 rounded-xl border border-[#EADFD8]/60 hover:border-emerald-500/30 transition-colors">
+                      <input
+                        type="checkbox"
+                        id="chk-prod-fresh"
+                        checked={prodFreshIngredients}
+                        onChange={() => setProdFreshIngredients(!prodFreshIngredients)}
+                        className="w-4.5 h-4.5 accent-emerald-600 cursor-pointer mt-0.5 focus-visible:ring-2 focus-visible:ring-emerald-500"
+                      />
+                      <label htmlFor="chk-prod-fresh" className="cursor-pointer select-none flex-1">
+                        <span className="text-xs font-bold text-[#201A17] block">Ingredientes frescos</span>
+                        <span className="text-[9px] text-[#756B66] font-semibold leading-normal block mt-0.5">
+                          O estabelecimento confirma que este produto utiliza ingredientes frescos.
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* PROMOTION MANAGEMENT SECTION */}
+                <div className="bg-white rounded-2xl border border-[#EADFD8] p-4 space-y-4 shadow-xs text-left">
+                  <div className="flex items-center justify-between border-b border-[#F7F4EF] pb-3">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-[#E94F2F]" />
+                      <h4 className="font-extrabold text-xs text-[#201A17] uppercase tracking-wider">Promoções e Ofertas</h4>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="chk-promo-enabled"
+                        checked={promoEnabled}
+                        onChange={() => setPromoEnabled(!promoEnabled)}
+                        className="w-4.5 h-4.5 accent-[#E94F2F] cursor-pointer"
+                      />
+                      <label htmlFor="chk-promo-enabled" className="text-xs font-bold text-[#E94F2F] cursor-pointer select-none">
+                        Ativar Promoção
+                      </label>
+                    </div>
+                  </div>
+
+                  {promoEnabled && (
+                    <div className="space-y-4 animate-fade-in text-left">
+                      {promoSource === 'uaipertim' ? (
+                        /* Read-only UaiPertim Promotion UI */
+                        <div className="bg-orange-50 border border-orange-200 p-3.5 rounded-xl space-y-2.5">
+                          <div className="flex items-start gap-2">
+                            <AlertCircle className="w-4 h-4 text-[#E94F2F] shrink-0 mt-0.5" />
+                            <div>
+                              <p className="text-xs font-extrabold text-[#E94F2F]">Oferta Oficial UaiPertim</p>
+                              <p className="text-[10px] text-orange-800 leading-normal font-semibold">
+                                Esta é uma promoção criada e subsidiada pela plataforma. Você não pode alterar as regras de preço e vigência, mas tem total autonomia para ativá-la ou desativá-la no seu cardápio pelo botão acima.
+                              </p>
+                            </div>
+                          </div>
+                          
+                          <div className="grid grid-cols-2 gap-3 text-[10px] font-semibold text-[#756B66] border-t border-orange-100 pt-2.5">
+                            <div>
+                              <span className="block font-black uppercase text-[8px] text-[#A39994] mb-0.5">Preço Promocional</span>
+                              <span className="text-[#2F9E69] text-xs font-black">R$ {promoPrice}</span>
+                            </div>
+                            <div>
+                              <span className="block font-black uppercase text-[8px] text-[#A39994] mb-0.5">Selo da Oferta</span>
+                              <span className="text-[#201A17] text-xs font-black">{promoLabel || 'Oferta UaiPertim'}</span>
+                            </div>
+                            {promoStartsAt && (
+                              <div className="col-span-2 sm:col-span-1">
+                                <span className="block font-black uppercase text-[8px] text-[#A39994] mb-0.5">Inicia em</span>
+                                <span className="text-[#201A17]">{new Date(promoStartsAt).toLocaleString('pt-BR')}</span>
+                              </div>
+                            )}
+                            {promoEndsAt && (
+                              <div className="col-span-2 sm:col-span-1">
+                                <span className="block font-black uppercase text-[8px] text-[#A39994] mb-0.5">Encerra em</span>
+                                <span className="text-[#201A17]">{new Date(promoEndsAt).toLocaleString('pt-BR')}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        /* Editable Establishment Promotion UI */
+                        <div className="space-y-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div className="space-y-1.5">
+                              <label className="text-[10px] font-black text-[#756B66] uppercase">Preço Promocional (R$) *</label>
+                              <input
+                                type="text"
+                                required={promoEnabled}
+                                placeholder="Ex: 19.90"
+                                value={promoPrice}
+                                onChange={(e) => setPromoPrice(e.target.value)}
+                                className="w-full p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white"
+                              />
+                              <p className="text-[9px] text-[#756B66] font-medium">Deve ser menor que o preço normal do prato (R$ {prodPrice}).</p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <label className="text-[10px] font-black text-[#756B66] uppercase">Texto do Selo (Ex: Oferta, Especial) *</label>
+                              <input
+                                type="text"
+                                required={promoEnabled}
+                                placeholder="Ex: Oferta"
+                                value={promoLabel}
+                                onChange={(e) => setPromoLabel(e.target.value.substring(0, 15))}
+                                className="w-full p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white"
+                              />
+                              <p className="text-[9px] text-[#756B66] font-medium">Até 15 caracteres. Exibido em destaque no cardápio.</p>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-[#F7F4EF] pt-3">
+                            <div className="space-y-1.5">
+                              <label className="text-[10px] font-black text-[#756B66] uppercase font-sans">Vigência - Início (Opcional)</label>
+                              <input
+                                type="datetime-local"
+                                value={promoStartsAt}
+                                onChange={(e) => setPromoStartsAt(e.target.value)}
+                                className="w-full p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-sans"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <label className="text-[10px] font-black text-[#756B66] uppercase font-sans">Vigência - Encerramento (Opcional)</label>
+                              <input
+                                type="datetime-local"
+                                value={promoEndsAt}
+                                onChange={(e) => setPromoEndsAt(e.target.value)}
+                                className="w-full p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 bg-white font-sans"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 {/* OPCIONAIS E ADICIONAIS */}
                 <div className="border-t border-[#EADFD8] pt-4 mt-2 space-y-3">
                   <div className="flex justify-between items-center">
@@ -3351,7 +4707,7 @@ export const EstablishmentArea: React.FC = () => {
 
                   {optionGroups.length === 0 ? (
                     <div className="text-center py-6 bg-[#F7F4EF] rounded-2xl border border-dashed border-[#EADFD8] text-[#756B66]">
-                      <p className="font-semibold text-xs">Nenhum opcional cadastrado.</p>
+                      <p className="font-semibold text-xs">Nenhum grupo cadastrado para este produto.</p>
                       <p className="text-[10px] text-gray-400 mt-0.5">Clique em "+ Grupo" para começar a personalizar.</p>
                     </div>
                   ) : (
@@ -3393,7 +4749,7 @@ export const EstablishmentArea: React.FC = () => {
                                     </span>
                                   )}
                                   <span className="bg-amber-100 text-amber-800 text-[9px] font-semibold px-1.5 py-0.5 rounded">
-                                    Mín: {group.minSelections} · Máx: {group.maxSelections}
+                                    Mín: {group.minSelect} · Máx: {group.maxSelect}
                                   </span>
                                   {!group.active && (
                                     <span className="bg-gray-300 text-gray-700 text-[9px] font-black px-1.5 py-0.5 rounded">
@@ -3432,10 +4788,14 @@ export const EstablishmentArea: React.FC = () => {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleRemoveOptionGroup(group.id)}
-                                  className="p-1 hover:bg-red-100 text-red-600 rounded cursor-pointer"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    requestDeleteOptionGroup(group.clientKey ?? group.id);
+                                  }}
+                                  className="relative z-20 pointer-events-auto p-1 hover:bg-red-100 text-red-600 rounded cursor-pointer"
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <Trash2 className="w-3.5 h-3.5 pointer-events-none" pointerEvents="none" />
                                 </button>
                                 <button
                                   type="button"
@@ -3506,16 +4866,16 @@ export const EstablishmentArea: React.FC = () => {
                                       type="number"
                                       id={`group-min-${group.id}`}
                                       min={group.required ? 1 : 0}
-                                      value={group.required ? group.minSelections : 0}
+                                      value={group.required ? group.minSelect : 0}
                                       disabled={!group.required}
                                       onChange={(e) => {
                                         const val = Math.max(group.required ? 1 : 0, parseInt(e.target.value) || 0);
-                                        handleUpdateOptionGroup(group.id, { minSelections: val });
+                                        handleUpdateOptionGroup(group.id, { minSelect: val, minSelections: val });
                                       }}
                                       className={`w-full p-2.5 rounded-lg border outline-none text-xs font-semibold ${
                                         !group.required 
                                           ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' 
-                                          : hasErrorField === 'minSelections' 
+                                          : hasErrorField === 'minSelect' || hasErrorField === 'minSelections' 
                                             ? 'border-red-500 bg-red-50/10 focus:border-red-500 bg-white' 
                                             : 'border-[#EADFD8] focus:border-[#E94F2F]/50 bg-white'
                                       }`}
@@ -3527,16 +4887,21 @@ export const EstablishmentArea: React.FC = () => {
                                     <input
                                       type="number"
                                       id={`group-max-${group.id}`}
-                                      min={group.minSelections}
-                                      value={group.maxSelections}
+                                      min={group.minSelect}
+                                      value={group.maxSelect}
                                       onChange={(e) => {
-                                        const val = Math.max(group.minSelections, parseInt(e.target.value) || 1);
-                                        handleUpdateOptionGroup(group.id, { maxSelections: val });
+                                        const val = Math.max(group.minSelect, parseInt(e.target.value) || 1);
+                                        handleUpdateOptionGroup(group.id, { maxSelect: val, maxSelections: val });
                                       }}
                                       className={`w-full p-2.5 rounded-lg border outline-none bg-white text-xs font-semibold ${
-                                        hasErrorField === 'maxSelections' ? 'border-red-500 bg-red-50/10 focus:border-red-500' : 'border-[#EADFD8] focus:border-[#E94F2F]/50'
+                                        hasErrorField === 'maxSelect' || hasErrorField === 'maxSelections' ? 'border-red-500 bg-red-50/10 focus:border-red-500' : 'border-[#EADFD8] focus:border-[#E94F2F]/50'
                                       }`}
                                     />
+                                    {group.options.filter(o => o.active).length < group.maxSelect && (
+                                      <p className="text-[10px] text-gray-500 font-medium leading-tight mt-1 text-left">
+                                        Atualmente existe {group.options.filter(o => o.active).length} opção(ões) ativa(s). O limite configurado será utilizado quando novas opções forem adicionadas.
+                                      </p>
+                                    )}
                                   </div>
 
                                   <div className="space-y-1">
@@ -3561,6 +4926,39 @@ export const EstablishmentArea: React.FC = () => {
                                       <option value="true">Ativo</option>
                                       <option value="false">Inativo</option>
                                     </select>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                                  <div className="space-y-1">
+                                    <label className="text-[9px] font-black text-[#756B66] uppercase">Permitir quantidade por opção?</label>
+                                    <select
+                                      value={group.allowOptionQuantity ? 'true' : 'false'}
+                                      onChange={(e) => handleUpdateOptionGroup(group.id, { allowOptionQuantity: e.target.value === 'true' })}
+                                      className="w-full p-2.5 rounded-lg border border-[#EADFD8] outline-none bg-white text-xs font-semibold focus:border-[#E94F2F]/50"
+                                    >
+                                      <option value="false">Não (Apenas selecionar item)</option>
+                                      <option value="true">Sim (Permitir +/- unidades do mesmo item)</option>
+                                    </select>
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <label className="text-[9px] font-black text-[#756B66] uppercase">Máximo de unidades por opção</label>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      value={group.maxQuantityPerOption ?? 5}
+                                      disabled={!group.allowOptionQuantity}
+                                      onChange={(e) => {
+                                        const val = Math.max(1, parseInt(e.target.value) || 1);
+                                        handleUpdateOptionGroup(group.id, { maxQuantityPerOption: val });
+                                      }}
+                                      className={`w-full p-2.5 rounded-lg border outline-none text-xs font-semibold ${
+                                        !group.allowOptionQuantity 
+                                          ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' 
+                                          : 'border-[#EADFD8] focus:border-[#E94F2F]/50 bg-white'
+                                      }`}
+                                    />
                                   </div>
                                 </div>
 
@@ -3648,10 +5046,14 @@ export const EstablishmentArea: React.FC = () => {
                                                 </button>
                                                 <button
                                                   type="button"
-                                                  onClick={() => handleRemoveOptionItem(group.id, opt.id)}
-                                                  className="p-1 hover:bg-red-100 text-red-600 rounded cursor-pointer"
+                                                  onClick={(e) => {
+                                                    e.preventDefault();
+                                                    e.stopPropagation();
+                                                    handleRemoveOptionItem(group.id, opt.id);
+                                                  }}
+                                                  className="relative z-20 pointer-events-auto p-1 hover:bg-red-100 text-red-600 rounded cursor-pointer"
                                                 >
-                                                  <Trash2 className="w-3.5 h-3.5" />
+                                                  <Trash2 className="w-3.5 h-3.5 pointer-events-none" pointerEvents="none" />
                                                 </button>
                                               </div>
                                             </div>
@@ -3995,36 +5397,54 @@ export const EstablishmentArea: React.FC = () => {
                             {selectedOrder.status === 'confirmado' && (
                               <button
                                 onClick={() => handleUpdateOrderStatus(selectedOrder.id, 'em_preparacao')}
-                                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs transition-all"
+                                disabled={updatingOrders[selectedOrder.id]}
+                                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                               >
-                                Iniciar preparação
+                                {updatingOrders[selectedOrder.id] ? 'Iniciando...' : 'Iniciar preparação'}
                               </button>
                             )}
                             {selectedOrder.status === 'em_preparacao' && (
                               <button
                                 onClick={() => handleUpdateOrderStatus(selectedOrder.id, selectedOrder.deliveryType === 'entrega' ? 'pronto' : 'pronto_retirada')}
-                                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-xs transition-all"
+                                disabled={updatingOrders[selectedOrder.id]}
+                                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-xs transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                               >
-                                {selectedOrder.deliveryType === 'entrega' ? 'Pronto para entrega' : 'Pronto para retirada'}
+                                {updatingOrders[selectedOrder.id] ? 'Processando...' : (selectedOrder.deliveryType === 'entrega' ? 'Pronto para entrega' : 'Pronto para retirada')}
                               </button>
                             )}
                             {(selectedOrder.status === 'pronto' || selectedOrder.status === 'pronto_retirada') && (
                               <button
-                                onClick={() => handleUpdateOrderStatus(selectedOrder.id, selectedOrder.deliveryType === 'entrega' ? 'saiu_entrega' : 'concluido')}
-                                className="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl font-bold text-xs transition-all"
+                                onClick={async () => {
+                                  const targetStatus = selectedOrder.deliveryType === 'entrega' ? 'saiu_entrega' : 'concluido';
+                                  await handleUpdateOrderStatus(selectedOrder.id, targetStatus);
+                                  if (targetStatus === 'concluido') {
+                                    setSelectedOrder(null);
+                                  }
+                                }}
+                                disabled={updatingOrders[selectedOrder.id]}
+                                className={`px-4 py-2 rounded-xl font-bold text-xs transition-all ${
+                                  updatingOrders[selectedOrder.id]
+                                    ? 'bg-indigo-600/50 cursor-not-allowed text-indigo-100'
+                                    : 'bg-indigo-500 hover:bg-indigo-600 text-white'
+                                }`}
                               >
-                                {selectedOrder.deliveryType === 'entrega' ? 'Saiu para entrega' : 'Concluir'}
+                                {updatingOrders[selectedOrder.id] ? 'Processando...' : (selectedOrder.deliveryType === 'entrega' ? 'Saiu para entrega' : 'Concluir')}
                               </button>
                             )}
                             {selectedOrder.status === 'saiu_entrega' && (
                               <button
-                                onClick={() => {
-                                  handleUpdateOrderStatus(selectedOrder.id, 'concluido');
+                                onClick={async () => {
+                                  await handleUpdateOrderStatus(selectedOrder.id, 'concluido');
                                   setSelectedOrder(null);
                                 }}
-                                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold text-xs transition-all"
+                                disabled={updatingOrders[selectedOrder.id]}
+                                className={`px-4 py-2 rounded-xl font-bold text-xs transition-all ${
+                                  updatingOrders[selectedOrder.id]
+                                    ? 'bg-emerald-600/50 cursor-not-allowed text-emerald-100'
+                                    : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                                }`}
                               >
-                                Concluir
+                                {updatingOrders[selectedOrder.id] ? 'Concluindo...' : 'Concluir'}
                               </button>
                             )}
                           </div>
@@ -4033,6 +5453,123 @@ export const EstablishmentArea: React.FC = () => {
                     </div>
                   )}
                 </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* -------------------- ALL OPERATIONAL PENDENCIES MODAL -------------------- */}
+      <AnimatePresence>
+        {isAllPendenciesModalOpen && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in" id="merchant-all-pendencies-modal">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl overflow-hidden border border-[#EADFD8] flex flex-col max-h-[85vh]"
+            >
+              <div className="p-5 border-b border-[#EADFD8] flex justify-between items-center bg-[#F7F4EF]">
+                <div className="space-y-0.5 text-left">
+                  <h3 className="font-extrabold text-lg text-[#201A17] flex items-center gap-2">
+                    <AlertCircle className="w-5 h-5 text-[#E94F2F]" />
+                    <span>Todas as Pendências Operacionais</span>
+                  </h3>
+                  <p className="text-xs text-[#756B66] font-semibold">
+                    Selecione os filtros abaixo para visualizar pendências por categoria.
+                  </p>
+                </div>
+                <button 
+                  onClick={() => setIsAllPendenciesModalOpen(false)} 
+                  className="text-[#756B66] hover:text-[#201A17] p-1.5 hover:bg-[#EADFD8]/30 rounded-xl transition-all"
+                  aria-label="Fechar modal de pendências"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Filters */}
+              <div className="p-4 border-b border-[#F7F4EF] flex flex-wrap gap-2 justify-start bg-white">
+                {(['todas', 'pedidos', 'mensagens', 'catalogo', 'configuracoes'] as const).map(f => {
+                  const label = f === 'todas' ? 'Todas'
+                    : f === 'pedidos' ? 'Pedidos'
+                    : f === 'mensagens' ? 'Mensagens'
+                    : f === 'catalogo' ? 'Catálogo'
+                    : 'Configurações';
+
+                  const count = pendencies.filter(p => {
+                    if (f === 'todas') return true;
+                    if (f === 'pedidos') return p.type === 'pedido_aguardando' || p.type === 'pedido_atrasado';
+                    if (f === 'mensagens') return p.type === 'mensagem_nao_respondida';
+                    if (f === 'catalogo') return p.type === 'produto_sem_imagem' || p.type === 'promocao_encerrando';
+                    if (f === 'configuracoes') return p.type === 'horario_nao_configurado' || p.type === 'entrega_incompleta';
+                    return false;
+                  }).length;
+
+                  return (
+                    <button
+                      key={f}
+                      onClick={() => setPendencyFilter(f)}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 ${
+                        pendencyFilter === f 
+                          ? 'bg-[#E94F2F] text-white border-transparent' 
+                          : 'bg-[#F7F4EF]/30 text-[#756B66] border-[#EADFD8] hover:bg-[#F7F4EF]/70'
+                      }`}
+                      aria-label={`Filtrar por ${label}`}
+                    >
+                      <span>{label}</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                        pendencyFilter === f ? 'bg-white/20 text-white' : 'bg-[#EADFD8]/40 text-[#756B66]'
+                      }`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Pendencies List */}
+              <div className="p-6 overflow-y-auto space-y-3 bg-[#F7F4EF]/10 flex-1 min-h-0">
+                {(() => {
+                  const filtered = pendencies.filter(p => {
+                    if (pendencyFilter === 'todas') return true;
+                    if (pendencyFilter === 'pedidos') return p.type === 'pedido_aguardando' || p.type === 'pedido_atrasado';
+                    if (pendencyFilter === 'mensagens') return p.type === 'mensagem_nao_respondida';
+                    if (pendencyFilter === 'catalogo') return p.type === 'produto_sem_imagem' || p.type === 'promocao_encerrando';
+                    if (pendencyFilter === 'configuracoes') return p.type === 'horario_nao_configurado' || p.type === 'entrega_incompleta';
+                    return false;
+                  });
+
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="py-12 text-center space-y-3 bg-white border border-[#EADFD8] rounded-2xl">
+                        <CheckCircle className="w-8 h-8 text-emerald-500 mx-auto" />
+                        <div>
+                          <p className="text-xs font-black text-[#201A17]">Sem pendências nesta categoria</p>
+                          <p className="text-[10px] text-[#756B66]">Tudo certo ou nenhum filtro ativo retornou itens.</p>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return filtered.map(p => {
+                    const originalClick = p.onClick;
+                    const wrappedClick = () => {
+                      setIsAllPendenciesModalOpen(false);
+                      originalClick();
+                    };
+                    return renderPendencyItem({ ...p, onClick: wrappedClick });
+                  });
+                })()}
+              </div>
+
+              <div className="p-4 border-t border-[#EADFD8] flex justify-end bg-[#F7F4EF]/30">
+                <button
+                  onClick={() => setIsAllPendenciesModalOpen(false)}
+                  className="px-5 py-2.5 bg-gray-100 hover:bg-gray-200 text-[#756B66] rounded-xl font-bold text-xs transition-colors"
+                >
+                  Fechar
+                </button>
               </div>
             </motion.div>
           </div>

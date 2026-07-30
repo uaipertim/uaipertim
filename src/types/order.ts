@@ -90,4 +90,10 @@ export interface Order {
   state: string;
   status: OrderStatus;
   statusHistory?: OrderStatusHistoryEntry[];
+  reviewId?: string;
+  reviewSubmitted?: boolean;
+  reviewSubmittedAt?: string;
+  hasUnreadCustomerUpdate?: boolean;
+  customerLastSeenStatus?: string;
+  customerLastViewedAt?: any;
 }

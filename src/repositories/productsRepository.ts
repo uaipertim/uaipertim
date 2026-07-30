@@ -1,8 +1,55 @@
-import { collection, getDocs, doc, setDoc, query, where, serverTimestamp } from 'firebase/firestore';
-import { db, isFirebaseConnected } from '../lib/firebase';
+import { collection, getDocs, doc, setDoc, query, where, serverTimestamp, deleteDoc } from 'firebase/firestore';
+import { db, isFirebaseConnected, auth } from '../lib/firebase';
 import { Product } from '../types/product';
 import { INITIAL_PRODUCTS } from '../initialData';
 import { normalizeProductFromFirestore } from '../services/productNormalizer';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid || null,
+      email: auth?.currentUser?.email || null,
+      emailVerified: auth?.currentUser?.emailVerified || null,
+      isAnonymous: auth?.currentUser?.isAnonymous || null,
+      tenantId: auth?.currentUser?.tenantId || null,
+      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 const COLLECTION_NAME = 'products';
 
@@ -25,7 +72,7 @@ export const productsRepository = {
       return list;
     } catch (error) {
       console.error("Error fetching products from Firestore:", error);
-      return INITIAL_PRODUCTS[establishmentId] || [];
+      handleFirestoreError(error, OperationType.GET, COLLECTION_NAME);
     }
   },
 
@@ -48,7 +95,7 @@ export const productsRepository = {
       return Object.keys(record).length > 0 ? record : INITIAL_PRODUCTS;
     } catch (error) {
       console.error("Error fetching all products from Firestore:", error);
-      return INITIAL_PRODUCTS;
+      handleFirestoreError(error, OperationType.GET, COLLECTION_NAME);
     }
   },
 
@@ -63,7 +110,7 @@ export const productsRepository = {
       }
     } catch (error) {
       console.error("Error saving products to Firestore:", error);
-      throw error;
+      handleFirestoreError(error, OperationType.WRITE, COLLECTION_NAME);
     }
   },
 
@@ -135,13 +182,34 @@ export const productsRepository = {
         sortOrder: (prod as any).sortOrder || 1,
         menuCategoryId: prod.menuCategoryId || null,
         menuCategoryName: prod.menuCategoryName || null,
+        promotionEnabled: prod.promotionEnabled === true,
+        promotionalPrice: typeof prod.promotionalPrice === 'number' ? prod.promotionalPrice : null,
+        promotionLabel: prod.promotionLabel || null,
+        promotionSource: prod.promotionSource || null,
+        promotionStartsAt: prod.promotionStartsAt || null,
+        promotionEndsAt: prod.promotionEndsAt || null,
+        preparedToOrder: prod.preparedToOrder === true,
+        freshIngredients: prod.freshIngredients === true,
         updatedAt: serverTimestamp()
       };
 
       await setDoc(docRef, firestoreData, { merge: true });
     } catch (error) {
       console.error("Error saving product to Firestore:", error);
-      throw error;
+      handleFirestoreError(error, OperationType.WRITE, `${COLLECTION_NAME}/${prod.id}`);
+    }
+  },
+
+  async deleteProduct(productId: string): Promise<void> {
+    if (!isFirebaseConnected || !db) {
+      throw new Error("Firebase not connected.");
+    }
+    try {
+      const docRef = doc(db, COLLECTION_NAME, productId);
+      await deleteDoc(docRef);
+    } catch (error) {
+      console.error("Error deleting product from Firestore:", error);
+      handleFirestoreError(error, OperationType.DELETE, `${COLLECTION_NAME}/${productId}`);
     }
   }
 };

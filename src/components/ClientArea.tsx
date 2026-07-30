@@ -1,21 +1,22 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { Product, CartItem, Order, Establishment, SelectedOptionGroup, PUBLIC_ESTABLISHMENT_CATEGORIES, MenuCategory } from '../types';
-import { calculateConfiguredOrderItem, normalizeOrderItem, getCartItemCustomizationLines } from '../utils/orderCalculation';
+import { getAvailableCategoriesForCity } from '../utils/categoryUtils';
+import { Product, CartItem, Order, Establishment, SelectedOptionGroup, PUBLIC_ESTABLISHMENT_CATEGORIES, MenuCategory, CATEGORY_LABELS } from '../types';
+import { calculateConfiguredOrderItem, normalizeOrderItem, getCartItemCustomizationLines, calculateCartTotals, isPromotionActive, calculateDiscountPercentage } from '../utils/orderCalculation';
 import { formatOrderDateTime } from '../utils/dateUtils';
 import { getPaymentMethodLabel } from '../utils/paymentLabels';
 import { 
   Search, Star, Clock, ShoppingBag, Plus, Minus, X, Check, MapPin, 
   ChevronRight, ArrowLeft, Heart, Bike, DollarSign, MessageSquare, Clipboard, FileText, CheckCircle2,
-  Medal, Award, Sparkles, AlertCircle,
+  Medal, Award, Sparkles, AlertCircle, Tag,
   LayoutGrid, ShoppingBasket, Pill, PawPrint, Utensils, Pizza, Store, Sprout, IceCream, Fish, Flame, Hamburger,
-  Sandwich, Croissant, CakeSlice, Apple, Beef, Beer, Pencil, Flower2, Hammer, House
+  Sandwich, Croissant, CakeSlice, Apple, Beef, Beer, Pencil, Flower2, Hammer, House, Phone, Mail
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { OrderStatusTracker } from './OrderStatusTracker';
 import { useLocation } from '../hooks/useLocation';
 import { canEstablishmentReceiveOrders, getNextOpeningTimeText } from '../utils/establishmentUtils';
-import { getCategoryLabel, getEstablishmentCategoryIds } from '../utils/labelUtils';
+import { getCategoryLabel, getEstablishmentCategoryIds, normalizeCategoryId, getEstablishmentCardLabel } from '../utils/labelUtils';
 import { useAuth } from '../hooks/useAuth';
 import { auth } from '../lib/firebase';
 import { addressService } from '../services/addressService';
@@ -26,6 +27,7 @@ import { resolveEstablishmentLogo, resolveEstablishmentCover } from '../utils/im
 import { FidelityModal } from './FidelityModal';
 import { MyAccount } from './MyAccount';
 import { OrderTrackingPage } from './account/OrderTrackingPage';
+import { PublicReviews } from './PublicReviews';
 
 function normalizeString(val: string): string {
   if (!val) return "";
@@ -59,8 +61,39 @@ export const ClientArea: React.FC = () => {
     setSelectedCity,
     cities,
     clearCart,
-    businessHours
+    businessHours,
+    allDeliveryZones
   } = useApp();
+
+  const getEstablishmentDeliveryFeeText = (est: any, userSelectedBairro: string) => {
+    const summary = est.deliverySummary;
+
+    if (summary) {
+      const { status, minimumFee } = summary;
+      if (status === "free") {
+        return "Entrega grátis";
+      } else if (status === "mixed") {
+        return "Grátis em bairros selecionados";
+      } else if (status === "paid") {
+        if (typeof minimumFee === "number" && !isNaN(minimumFee) && minimumFee !== null) {
+          return `A partir de R$ ${minimumFee.toFixed(2).replace('.', ',')}`;
+        }
+        return "Calculada no checkout";
+      } else {
+        // status === "unconfigured"
+        return "Calculada no checkout";
+      }
+    }
+
+    // Compatibilidade inicial (old establishments without summary)
+    if (est.deliveryFee === 0) {
+      return "Entrega grátis";
+    } else if (est.deliveryFee !== undefined && est.deliveryFee !== null && !isNaN(est.deliveryFee)) {
+      return `R$ ${est.deliveryFee.toFixed(2).replace('.', ',')}`;
+    }
+
+    return "Calculada no checkout";
+  };
 
   const [path, navigate] = useLocation();
   const isDemo = path === '/demo';
@@ -72,10 +105,116 @@ export const ClientArea: React.FC = () => {
   const [activeIndex, setActiveIndex] = useState(0);
   const [swipeStart, setSwipeStart] = useState<{ x: number, y: number } | null>(null);
 
+  const homeSlides = useMemo(() => [
+    {
+      id: 'startup-regional',
+      badge: 'STARTUP REGIONAL',
+      title: 'O melhor da sua cidade, em um só lugar.',
+      subtitle: 'Encontre restaurantes, mercados e sabores locais. Peça pelo celular e acompanhe tudo em tempo real.',
+      bgClass: 'bg-gradient-to-br from-[#E94F2F] to-[#BD351C] text-white',
+      bgImage: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600&auto=format&fit=crop&q=60',
+      badgeBg: 'bg-[#FFBE5C] text-[#201A17]',
+      hasSearch: true,
+      order: 1,
+      active: true,
+    },
+    {
+      id: 'comercio-local',
+      badge: 'COMÉRCIO LOCAL',
+      title: 'Descubra o que está pertim de você.',
+      subtitle: 'Negócios, produtos e serviços da sua cidade reunidos em um só app.',
+      bgClass: 'bg-[#FFF5EE] text-[#201A17] border border-[#EADFD8]',
+      bgImage: 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=600&auto=format&fit=crop&q=60',
+      badgeBg: 'bg-[#E94F2F] text-white',
+      cta: {
+        text: 'Conhecer Fidelidade',
+        action: 'fidelity'
+      },
+      hasFidelityCard: true,
+      order: 2,
+      active: true,
+    },
+    {
+      id: 'categorias',
+      badge: 'CATEGORIAS',
+      title: 'Restaurantes, mercados, farmácias e mais.',
+      subtitle: 'Encontre com mais facilidade o que você precisa, perto de você.',
+      bgClass: 'bg-gradient-to-br from-[#FDF3F0] to-[#FFF5EE] text-[#201A17] border border-[#EADFD8]',
+      bgImage: 'https://images.unsplash.com/photo-1498837167922-ddd27525d352?w=600&auto=format&fit=crop&q=60',
+      badgeBg: 'bg-[#E94F2F]/10 text-[#E94F2F]',
+      cta: {
+        text: 'Ver Todas Categorias',
+        action: 'categories_modal'
+      },
+      order: 3,
+      active: true,
+    },
+    {
+      id: 'parceiros',
+      badge: 'PARCEIROS',
+      title: 'Mais visibilidade para quem é da cidade.',
+      subtitle: 'O Uaipertim conecta clientes e estabelecimentos locais de forma simples e moderna.',
+      bgClass: 'bg-gradient-to-br from-[#201A17] to-[#3E3530] text-white',
+      bgImage: 'https://images.unsplash.com/photo-1552566626-52f8b828add9?w=600&auto=format&fit=crop&q=60',
+      badgeBg: 'bg-[#FFBE5C] text-[#201A17]',
+      order: 4,
+      active: true,
+    },
+    {
+      id: 'ofertas',
+      badge: 'OFERTAS',
+      title: 'Fique de olho nos destaques e promoções.',
+      subtitle: 'Os parceiros podem ganhar mais destaque para atrair novos pedidos.',
+      bgClass: 'bg-gradient-to-br from-[#FFBE5C] to-[#E94F2F] text-white',
+      bgImage: 'https://images.unsplash.com/photo-1555939594-58d7cb561ad1?w=600&auto=format&fit=crop&q=60',
+      badgeBg: 'bg-[#201A17] text-white',
+      cta: {
+        text: 'Explorar Destaques',
+        action: 'explore_tab'
+      },
+      order: 5,
+      active: true,
+    }
+  ].filter(slide => slide.active).sort((a, b) => a.order - b.order), []);
+
+  const [isHovered, setIsHovered] = useState(false);
+  const [isInteracting, setIsInteracting] = useState(false);
+  const interactionTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  const handleUserInteraction = () => {
+    setIsInteracting(true);
+    if (interactionTimeoutRef.current) {
+      clearTimeout(interactionTimeoutRef.current);
+    }
+    interactionTimeoutRef.current = setTimeout(() => {
+      setIsInteracting(false);
+    }, 8000);
+  };
+
+  React.useEffect(() => {
+    return () => {
+      if (interactionTimeoutRef.current) {
+        clearTimeout(interactionTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  React.useEffect(() => {
+    if (homeSlides.length <= 1) return;
+    if (isHovered || isInteracting) return;
+
+    const timer = setInterval(() => {
+      setActiveIndex((prev) => (prev + 1) % homeSlides.length);
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [isHovered, isInteracting, homeSlides.length]);
+
   const handlePointerDown = (e: React.PointerEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest('button, a, input, textarea, select')) return;
     setSwipeStart({ x: e.clientX, y: e.clientY });
+    handleUserInteraction();
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -84,11 +223,19 @@ export const ClientArea: React.FC = () => {
     const deltaY = e.clientY - swipeStart.y;
 
     if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY)) {
-      setActiveIndex(prev => (prev === 0 ? 1 : 0));
+      if (deltaX > 50) {
+        // Swipe right (previous slide)
+        setActiveIndex(prev => (prev - 1 + homeSlides.length) % homeSlides.length);
+      } else {
+        // Swipe left (next slide)
+        setActiveIndex(prev => (prev + 1) % homeSlides.length);
+      }
+      handleUserInteraction();
     }
     setSwipeStart(null);
   };
   const [isFidelityModalOpen, setIsFidelityModalOpen] = useState(false);
+  const [establishmentTab, setEstablishmentTab] = useState<'menu' | 'info' | 'reviews'>('menu');
   const [selectedCategory, setSelectedCategory] = useState('Todos');
   const [isAllCategoriesModalOpen, setIsAllCategoriesModalOpen] = useState(false);
 
@@ -103,6 +250,7 @@ export const ClientArea: React.FC = () => {
     padarias: { bg: 'bg-[#FFF7ED]', text: 'text-[#EA580C]', icon: Croissant },
     confeitarias: { bg: 'bg-[#FDF2F8]', text: 'text-[#DB2777]', icon: CakeSlice },
     japonesa: { bg: 'bg-[#F0FDF4]', text: 'text-[#16A34A]', icon: Fish },
+    mineira: { bg: 'bg-[#ECFDF5]', text: 'text-[#059669]', icon: Utensils },
     brasileira: { bg: 'bg-[#ECFDF5]', text: 'text-[#059669]', icon: Utensils },
     mercados: { bg: 'bg-[#EFF6FF]', text: 'text-[#2563EB]', icon: ShoppingBasket },
     mercearias: { bg: 'bg-[#F0FDFA]', text: 'text-[#0D9488]', icon: ShoppingBasket },
@@ -123,7 +271,33 @@ export const ClientArea: React.FC = () => {
   }), []);
 
   const getCategoryStyle = (id: string) => {
-    const style = categoryStyles[id];
+    const idMap: Record<string, string> = {
+      restaurants: 'restaurantes',
+      pizzarias: 'pizzarias',
+      lanches: 'lanches',
+      hamburgueres: 'hamburgueres',
+      acai_doces: 'acai_doces',
+      padarias: 'padarias',
+      confeitarias: 'confeitarias',
+      japonesa: 'japonesa',
+      mineira: 'mineira',
+      brasileira: 'brasileira',
+      mercados: 'mercados',
+      mercearias: 'mercearias',
+      hortifrutis: 'hortifrutis',
+      acougues: 'acougues',
+      farmacias: 'farmacias',
+      pet_shops: 'pet_shops',
+      agropecuarias: 'agropecuarias',
+      bebidas: 'bebidas',
+      conveniencias: 'conveniencias',
+      papelarias: 'papelarias',
+      floriculturas: 'floriculturas',
+      materiais_construcao: 'materiais_construcao',
+      utilidades_domesticas: 'utilidades_domesticas',
+    };
+    const styleKey = idMap[id] || id;
+    const style = categoryStyles[styleKey];
     if (!style && id !== 'Todos') {
       const isDev = typeof window !== 'undefined' && (
         (window as any).__vite_plugin_react_preamble_installed__ || 
@@ -142,39 +316,19 @@ export const ClientArea: React.FC = () => {
     return found ? found.id : 'Todos';
   };
 
-  const activeCategoryIds = useMemo(() => {
-    const ids = new Set<string>();
-    establishments.forEach(est => {
-      if (est.cityId === selectedCity.id) {
-        const isActive = est.platformStatus !== undefined 
-          ? est.platformStatus === 'active'
-          : (est.active === true && est.archived !== true && est.suspended !== true);
-        if (isActive) {
-          const catIds = getEstablishmentCategoryIds(est);
-          catIds.forEach(id => ids.add(id));
-        }
-      }
-    });
-    return ids;
+  const availableCategories = useMemo(() => {
+    return getAvailableCategoriesForCity(establishments, selectedCity.id);
   }, [establishments, selectedCity]);
 
   const homeCategories = useMemo(() => {
-    const homeOnly = PUBLIC_ESTABLISHMENT_CATEGORIES
-      .filter(cat => activeCategoryIds.has(cat.id))
-      .sort((a, b) => (a.homeOrder || 0) - (b.homeOrder || 0))
-      .map(cat => cat.label);
-    return ['Todos', ...homeOnly];
-  }, [activeCategoryIds]);
+    return availableCategories.map(cat => cat.label);
+  }, [availableCategories]);
 
   const allCategoriesList = useMemo(() => {
-    const sorted = [...PUBLIC_ESTABLISHMENT_CATEGORIES]
-      .filter(cat => activeCategoryIds.has(cat.id))
-      .sort((a, b) => (a.homeOrder || 0) - (b.homeOrder || 0))
-      .map(cat => cat.label);
-    return ['Todos', ...sorted];
-  }, [activeCategoryIds]);
+    return availableCategories.map(cat => cat.label);
+  }, [availableCategories]);
 
-  const [clientSubView, setClientSubView] = useState<'home' | 'menu' | 'tracking'>('home');
+  const [clientSubView, setClientSubView] = useState<'home' | 'menu' | 'tracking' | 'explore'>('home');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
   // Drag to scroll logic for categories (Desktop and Mobile)
@@ -294,6 +448,72 @@ export const ClientArea: React.FC = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
 
+  // Focus and scroll lock management for the cart drawer
+  const lastActiveElementRef = React.useRef<HTMLElement | null>(null);
+
+  React.useEffect(() => {
+    if (isCartOpen) {
+      // Lock scroll
+      document.body.style.overflow = 'hidden';
+      // Save last active element
+      lastActiveElementRef.current = document.activeElement as HTMLElement;
+      // Focus on the close button
+      setTimeout(() => {
+        const closeBtn = document.getElementById('close-cart-btn');
+        if (closeBtn) closeBtn.focus();
+      }, 50);
+    } else {
+      // Restore scroll
+      document.body.style.overflow = '';
+      // Restore focus
+      if (lastActiveElementRef.current) {
+        lastActiveElementRef.current.focus();
+        lastActiveElementRef.current = null;
+      }
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [isCartOpen]);
+
+  // Escape key closes the cart drawer
+  React.useEffect(() => {
+    if (!isCartOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsCartOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isCartOpen]);
+
+  // Focus trap inside the drawer
+  const handleFocusTrap = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab') return;
+    const drawer = e.currentTarget;
+    const focusableElements = drawer.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusableElements.length === 0) return;
+    const firstElement = focusableElements[0];
+    const lastElement = focusableElements[focusableElements.length - 1];
+
+    if (e.shiftKey) {
+      if (document.activeElement === firstElement) {
+        lastElement.focus();
+        e.preventDefault();
+      }
+    } else {
+      if (document.activeElement === lastElement) {
+        firstElement.focus();
+        e.preventDefault();
+      }
+    }
+  };
+
   React.useEffect(() => {
     const handleOpenCart = () => {
       setIsCartOpen(true);
@@ -309,6 +529,29 @@ export const ClientArea: React.FC = () => {
     };
   }, []);
 
+  // Synchronize search and home from bottom navigation
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('search') === 'true') {
+      setClientSubView('home');
+      setSelectedCategory('Todos');
+      // Scroll to and focus search bar
+      setTimeout(() => {
+        const searchInput = document.querySelector('input[placeholder="Busque por comida ou estabelecimento..."]') as HTMLInputElement;
+        if (searchInput) {
+          searchInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          searchInput.focus();
+        }
+      }, 150);
+    } else if (params.get('view') === 'explore') {
+      setClientSubView('explore');
+    } else if ((path === '/' || path === '/demo') && !window.location.search) {
+      setClientSubView('home');
+      setSearchQuery('');
+      setSelectedCategory('Todos');
+    }
+  }, [path, window.location.search]);
+
   // Checkout Form States
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
@@ -322,6 +565,7 @@ export const ClientArea: React.FC = () => {
   const [quoteNeighborhood, setQuoteNeighborhood] = useState<string>('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [complement, setComplement] = useState('');
+  const [reference, setReference] = useState('');
   const [deliveryType, setDeliveryType] = useState<'entrega' | 'retirada'>('entrega');
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card_on_delivery' | 'pix_on_delivery'>('pix_on_delivery');
   const [changeRequired, setChangeRequired] = useState<boolean>(false);
@@ -481,14 +725,9 @@ export const ClientArea: React.FC = () => {
           const isDestacado = est.isFeaturedPartner === true || est.featured === true || est.id === 'pizzaria-da-praca';
           if (!isDestacado) return false;
         } else {
-          const visualToCanonicalMap: Record<string, string> = {};
-          PUBLIC_ESTABLISHMENT_CATEGORIES.forEach(cat => {
-            visualToCanonicalMap[cat.label] = cat.id;
-          });
-          const canonicalId = visualToCanonicalMap[selectedCategory] || selectedCategory.toLowerCase();
-          const estCatIds = getEstablishmentCategoryIds(est);
-          const hasMatch = estCatIds.includes(canonicalId);
-          if (!hasMatch) return false;
+          const canonicalId = PUBLIC_ESTABLISHMENT_CATEGORIES.find(c => c.label === selectedCategory)?.id || selectedCategory.toLowerCase();
+          const hasCategory = getEstablishmentCategoryIds(est).includes(canonicalId);
+          if (!hasCategory) return false;
         }
       }
 
@@ -543,6 +782,13 @@ export const ClientArea: React.FC = () => {
     return establishments.find(e => e.id === selectedEstablishmentId) || establishments[0];
   }, [establishments, selectedEstablishmentId]);
 
+  // Establishment corresponding to items in the cart
+  const cartEst = useMemo(() => {
+    if (cart.length === 0) return null;
+    const estId = cart[0].product.establishmentId;
+    return establishments.find(e => e.id === estId) || currentEst;
+  }, [cart, establishments, currentEst]);
+
   // 1. Reset logistics states when store changes
   React.useEffect(() => {
     if (currentEst?.id && currentEst.id !== prevEstId) {
@@ -556,6 +802,7 @@ export const ClientArea: React.FC = () => {
       setQuoteError(null);
       setQuoteAvailable(true);
       setDeliveryFee(0);
+      setEstablishmentTab('menu');
     }
   }, [currentEst?.id, prevEstId]);
 
@@ -698,13 +945,14 @@ export const ClientArea: React.FC = () => {
   }, [allMenuCategories, selectedEstablishmentId, currentProducts]);
 
   // Handle viewing an establishment's menu
-  const handleViewMenu = (estId: string) => {
+  const handleViewMenu = (estId: string, initialTab: 'menu' | 'info' | 'reviews' = 'menu') => {
     const est = establishments.find(e => e.id === estId);
     if (est && !canEstablishmentReceiveOrders(est)) {
       return;
     }
     setSelectedEstablishmentId(estId);
     setClientSubView('menu');
+    setEstablishmentTab(initialTab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -783,7 +1031,7 @@ export const ClientArea: React.FC = () => {
     setSelectedOptionGroups(prev => {
       let next: SelectedOptionGroup[] = [];
       const existingGroup = prev.find(g => g.groupId === group.id);
-      const isSingle = group.maxSelections === 1;
+      const isSingle = group.maxSelect === 1 && !group.allowOptionQuantity;
 
       if (isSingle) {
         // Exclusive Single Selection / Radio Group behavior (Requirement 2 & 4)
@@ -818,7 +1066,10 @@ export const ClientArea: React.FC = () => {
               {
                 optionId: option.id,
                 name: option.name,
-                additionalPrice: option.additionalPrice || 0
+                additionalPrice: option.additionalPrice || 0,
+                unitPrice: option.additionalPrice || 0,
+                quantity: 1,
+                totalPrice: option.additionalPrice || 0
               }
             ]
           };
@@ -837,9 +1088,9 @@ export const ClientArea: React.FC = () => {
         : [];
       const currentOptQty = currentOptSelections.reduce((sum, o) => sum + (o.quantity ?? 1), 0);
 
-      // Selection count for OTHER options in the group
-      const otherSelectionsCount = existingGroup
-        ? existingGroup.selectedOptions.filter(o => o.optionId !== option.id).reduce((sum, o) => sum + (o.quantity ?? 1), 0)
+      // Selection count for OTHER options in the group (different options selected)
+      const otherOptionsCount = existingGroup
+        ? existingGroup.selectedOptions.filter(o => o.optionId !== option.id).length
         : 0;
 
       // Handle change
@@ -847,23 +1098,38 @@ export const ClientArea: React.FC = () => {
       if (qtyChange !== undefined) {
         targetQty = Math.max(0, currentOptQty + qtyChange);
       } else {
-        // Multi-select: click on row toggle from 0 to 1, or from 1 to 0
+        // Multi-select: click on row toggle from 0 to 1, or from >0 to 0
         targetQty = currentOptQty > 0 ? 0 : 1;
       }
 
       // Check limits
-      const totalGroupSelections = otherSelectionsCount + targetQty;
-      if (totalGroupSelections > group.maxSelections) {
-        showToast(`Você pode selecionar no máximo ${group.maxSelections} opções para "${group.name}".`, 'warning');
+      if (group.allowOptionQuantity) {
+        const maxQtyPerOpt = group.maxQuantityPerOption ?? 5;
+        if (targetQty > maxQtyPerOpt) {
+          showToast(`Você pode adicionar no máximo ${maxQtyPerOpt} unidades deste adicional.`, 'info');
+          return prev;
+        }
+      } else {
+        if (targetQty > 1) {
+          targetQty = 1;
+        }
+      }
+
+      const differentOptionsCount = otherOptionsCount + (targetQty > 0 ? 1 : 0);
+      if (differentOptionsCount > group.maxSelect) {
+        showToast(`Você pode selecionar no máximo ${group.maxSelect} ${group.maxSelect === 1 ? 'opção diferente' : 'opções diferentes'} neste grupo.`, 'info');
         return prev;
       }
 
-      // Build objects for target quantity
-      const addedOptions = Array.from({ length: targetQty }, () => ({
+      // Build target option item
+      const updatedOptionItem = {
         optionId: option.id,
         name: option.name,
-        additionalPrice: option.additionalPrice || 0
-      }));
+        additionalPrice: option.additionalPrice || 0,
+        unitPrice: option.additionalPrice || 0,
+        quantity: targetQty,
+        totalPrice: (option.additionalPrice || 0) * targetQty
+      };
 
       if (!existingGroup) {
         if (targetQty > 0) {
@@ -872,17 +1138,15 @@ export const ClientArea: React.FC = () => {
             {
               groupId: group.id,
               groupName: group.name,
-              selectedOptions: addedOptions
+              selectedOptions: [updatedOptionItem]
             }
           ];
         } else {
           next = prev;
         }
       } else {
-        const updatedOptions = [
-          ...existingGroup.selectedOptions.filter(o => o.optionId !== option.id),
-          ...addedOptions
-        ];
+        const otherOptions = existingGroup.selectedOptions.filter(o => o.optionId !== option.id);
+        const updatedOptions = targetQty > 0 ? [...otherOptions, updatedOptionItem] : otherOptions;
 
         if (updatedOptions.length === 0) {
           next = prev.filter(g => g.groupId !== group.id);
@@ -925,13 +1189,13 @@ export const ClientArea: React.FC = () => {
       for (const group of selectedProduct.optionGroups) {
         if (!group.active) continue;
         const selection = selectedOptionGroups.find(sg => sg.groupId === group.id);
-        const selectedCount = selection ? selection.selectedOptions.reduce((sum, so) => sum + (so.quantity ?? 1), 0) : 0;
+        const selectedCount = selection ? selection.selectedOptions.length : 0;
 
-        if (group.required && selectedCount < group.minSelections) {
+        if (group.required && selectedCount < group.minSelect) {
           newInvalidGroupIds.push(group.id);
-        } else if (selectedCount < group.minSelections) {
+        } else if (selectedCount < group.minSelect) {
           newInvalidGroupIds.push(group.id);
-        } else if (selectedCount > group.maxSelections) {
+        } else if (selectedCount > group.maxSelect) {
           newInvalidGroupIds.push(group.id);
         }
       }
@@ -993,12 +1257,14 @@ export const ClientArea: React.FC = () => {
   };
 
   // Cart calculations
+  const cartTotalsObj = useMemo(() => {
+    const actualFee = (deliveryType === 'entrega' && (quoteLoading || quoteError || !quoteAvailable)) ? 0 : deliveryFee;
+    return calculateCartTotals(cart, actualFee, couponDiscount, deliveryType);
+  }, [cart, deliveryFee, couponDiscount, deliveryType, quoteLoading, quoteError, quoteAvailable]);
+
   const cartSubtotal = useMemo(() => {
-    return cart.reduce((sum, item) => {
-      const normalized = normalizeOrderItem(item);
-      return sum + normalized.lineTotal;
-    }, 0);
-  }, [cart]);
+    return cartTotalsObj.productsSubtotalCents / 100;
+  }, [cartTotalsObj]);
 
   // Dynamic quotation fetcher
   React.useEffect(() => {
@@ -1117,19 +1383,22 @@ export const ClientArea: React.FC = () => {
   ]);
 
   const cartTotal = useMemo(() => {
-    const afterDiscount = cartSubtotal - couponDiscount;
-    return Math.max(0, afterDiscount + (deliveryType === 'entrega' && (quoteLoading || quoteError || !quoteAvailable) ? 0 : deliveryFee));
-  }, [cartSubtotal, couponDiscount, deliveryFee, deliveryType, quoteLoading, quoteError, quoteAvailable]);
+    return cartTotalsObj.totalCents / 100;
+  }, [cartTotalsObj]);
 
   const isSubmitDisabled = useMemo(() => {
     if (authLoading) return true;
     
+    const activeStore = cartEst || currentEst;
     // Check if establishment can receive orders
-    if (!currentEst || !canEstablishmentReceiveOrders(currentEst)) return true;
+    if (!activeStore || !canEstablishmentReceiveOrders(activeStore)) return true;
+
+    // Check payment confirmation checkbox
+    if (!confirmPaymentToEst) return true;
 
     // Check availability of chosen delivery type
     if (deliveryType === 'entrega') {
-      const entregaPropria = currentEst.entregaPropria !== false;
+      const entregaPropria = activeStore.entregaPropria !== false;
       if (!entregaPropria) return true;
       if (quoteLoading) return true;
       if (!quoteAvailable) return true;
@@ -1137,7 +1406,7 @@ export const ClientArea: React.FC = () => {
       if (!bairro || bairro.trim() === '') return true;
       if (cartSubtotal < quoteMinOrderValue) return true;
     } else if (deliveryType === 'retirada') {
-      const atendeRetirada = currentEst.atendeRetirada !== false;
+      const atendeRetirada = activeStore.atendeRetirada !== false;
       if (!atendeRetirada) return true;
       if (cartSubtotal < quoteMinOrderValue) return true;
     } else {
@@ -1145,26 +1414,28 @@ export const ClientArea: React.FC = () => {
     }
     
     return false;
-  }, [authLoading, currentEst, deliveryType, quoteLoading, quoteAvailable, quoteError, bairro, cartSubtotal, quoteMinOrderValue]);
+  }, [authLoading, cartEst, currentEst, deliveryType, quoteLoading, quoteAvailable, quoteError, bairro, cartSubtotal, quoteMinOrderValue, confirmPaymentToEst]);
 
   const submitButtonLabel = useMemo(() => {
-    if (!currentEst || !canEstablishmentReceiveOrders(currentEst)) {
+    const activeStore = cartEst || currentEst;
+    if (!activeStore || !canEstablishmentReceiveOrders(activeStore)) {
       return "Estabelecimento Fechado";
     }
     if (deliveryType === 'entrega') {
-      const entregaPropria = currentEst.entregaPropria !== false;
+      const entregaPropria = activeStore.entregaPropria !== false;
       if (!entregaPropria) return "Entrega Indisponível";
       if (quoteLoading) return "Calculando Taxa...";
       if (!bairro || bairro.trim() === '') return "Informe o Bairro";
       if (quoteError !== null || !quoteAvailable) return "Entrega Indisponível";
       if (cartSubtotal < quoteMinOrderValue) return "Abaixo do Pedido Mínimo";
     } else {
-      const atendeRetirada = currentEst.atendeRetirada !== false;
+      const atendeRetirada = activeStore.atendeRetirada !== false;
       if (!atendeRetirada) return "Retirada Indisponível";
       if (cartSubtotal < quoteMinOrderValue) return "Abaixo do Pedido Mínimo";
     }
-    return "Finalizar e Enviar Pedido";
-  }, [currentEst, deliveryType, quoteLoading, bairro, quoteError, quoteAvailable, cartSubtotal, quoteMinOrderValue]);
+    if (!confirmPaymentToEst) return "Aceite o termo para enviar";
+    return "Confirmar pedido";
+  }, [cartEst, currentEst, deliveryType, quoteLoading, bairro, quoteError, quoteAvailable, cartSubtotal, quoteMinOrderValue, confirmPaymentToEst]);
 
   // Apply Coupon
   const handleApplyCoupon = async () => {
@@ -1493,7 +1764,138 @@ export const ClientArea: React.FC = () => {
         </div>
       ) : (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
-          
+          {clientSubView === 'explore' && (
+            <motion.div
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="space-y-6 pb-20 pt-6 px-4"
+            >
+              <div className="space-y-1">
+                <span className="text-[10px] font-bold text-[#E94F2F] tracking-widest uppercase">DESCUBRA PERTIM</span>
+                <h1 className="text-[32px] font-extrabold text-[#201A17] leading-[1.1] tracking-tight">
+                  Explore o que está<br />
+                  <span className="relative inline-block">
+                    <span className="relative z-10 text-[#E94F2F]">Pertim</span>
+                    <span className="absolute bottom-0 left-0 w-full h-2 bg-[#E94F2F]/20 -rotate-1 rounded-full" aria-hidden="true"></span>
+                    <span className="text-[#201A17]"> de você</span>
+                  </span>
+                </h1>
+              </div>
+              <div className="bg-white border border-[#EADFD8] rounded-2xl flex items-center shadow-sm overflow-hidden">
+                <Search className="w-5 h-5 text-[#756B66] ml-3" />
+                <input
+                  type="text"
+                  placeholder="Buscar produtos ou estabelecimentos"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="flex-1 px-3 py-3 text-sm text-[#201A17] outline-none placeholder:text-[#756B66]"
+                />
+              </div>
+
+              {/* Categories */}
+              <div className="space-y-3">
+                <h3 className="text-sm font-black text-[#201A17]">Categorias</h3>
+                <div className="grid grid-cols-2 gap-3">
+                    {availableCategories.map((cat) => {
+                        const isSelected = selectedCategory === cat.label;
+                        const style = getCategoryStyle(cat.id === 'all' ? 'Todos' : cat.id);
+                        const Icon = style.icon;
+                        return (
+                            <button
+                                type="button"
+                                key={cat.id}
+                                onClick={() => setSelectedCategory(cat.label)}
+                                aria-pressed={isSelected}
+                                className={`w-full h-[42px] px-3 rounded-full text-xs font-bold transition-colors flex items-center gap-2 ${
+                                    isSelected ? 'bg-[#E94F2F] text-white' : 'bg-[#FAF8F5] text-[#756B66] hover:bg-[#EADFD8]'
+                                }`}
+                            >
+                                <div className="w-[18px] h-[18px] flex items-center justify-center">
+                                    <Icon className="w-[18px] h-[18px]" />
+                                </div>
+                                <span className="truncate">{cat.label}</span>
+                            </button>
+                        );
+                    })}
+                </div>
+              </div>
+
+              {/* Establishment List */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-black text-[#201A17]">Estabelecimentos na sua cidade</h3>
+                {filteredEstablishments.length === 0 ? (
+                    <p className="text-sm text-[#756B66]">Nenhum estabelecimento encontrado.</p>
+                ) : (
+                    <div className="grid grid-cols-1 gap-4">
+                        {filteredEstablishments.map((est) => {
+                            const opState = (() => {
+                              const platformStatus = est.platformStatus || (est.active ? 'active' : 'inactive');
+                              const isPaused = est.operationalPause === true || est.temporarilyPaused === true;
+                              if (platformStatus !== 'active') return 'indisponivel';
+                              if (isPaused) return 'pausado';
+                              const isOpen = est.open !== undefined ? est.open === true : (est.isOpen !== undefined ? est.isOpen === true : true);
+                              const acceptingOrders = est.acceptingOrders !== undefined ? est.acceptingOrders === true : true;
+                              const isEstOpen = canEstablishmentReceiveOrders(est);
+                              if (isOpen && acceptingOrders && isEstOpen) return 'aberto';
+                              return 'fechado';
+                            })();
+
+                            const isAberto = opState === 'aberto';
+                            let badgeText = 'Aberto';
+                            let badgeClass = 'bg-emerald-50 text-emerald-800 border border-emerald-200/60 font-bold text-[10px] px-2 py-0.5 rounded-full';
+                            if (opState === 'indisponivel') { badgeText = 'Indisponível'; badgeClass = 'bg-neutral-50 text-neutral-600 border border-neutral-200'; }
+                            else if (opState === 'pausado') { badgeText = 'Pausado'; badgeClass = 'bg-amber-50 text-amber-800 border border-amber-200'; }
+                            else if (opState === 'fechado') { badgeText = 'Fechado'; badgeClass = 'bg-neutral-50 text-neutral-800 border border-neutral-200'; }
+
+                            const categoryDef = PUBLIC_ESTABLISHMENT_CATEGORIES.find(c => c.id === normalizeCategoryId(est.category));
+                            const establishmentCategory = categoryDef ? categoryDef.establishmentLabel : (CATEGORY_LABELS[normalizeCategoryId(est.category)] || est.category);
+
+                            return (
+                                <button
+                                    type="button"
+                                    key={est.id}
+                                    onClick={() => {
+                                      setSelectedEstablishmentId(est.id);
+                                      setClientSubView('menu');
+                                    }}
+                                    aria-label={`Abrir ${est.name}, ${establishmentCategory}, ${badgeText}`}
+                                    className="bg-white p-4 rounded-xl border border-[#EADFD8] shadow-sm flex items-center gap-3 w-full text-left hover:border-[#E94F2F]/30 transition-colors"
+                                >
+                                    <img src={est.logoUrl || est.image || "/placeholder.png"} alt={est.name} className="w-14 h-14 rounded-xl object-cover" />
+                                    <div className="flex-1 min-w-0">
+                                        <div className="flex justify-between items-center gap-2">
+                                            <h4 className="font-bold text-sm text-[#201A17] truncate">{est.name}</h4>
+                                            <span className={badgeClass}>{badgeText}</span>
+                                        </div>
+                                        <p className="text-xs text-[#756B66]">{establishmentCategory}</p>
+                                        <div className="flex items-center gap-2 text-[10px] text-[#756B66] mt-1">
+                                            <span>{[est.acceptsDelivery && 'Entrega', est.acceptsPickup && 'Retirada'].filter(Boolean).join(' e ')}</span>
+                                            <span>•</span>
+                                            <span>{est.deliveryTime}</span>
+                                            <span>•</span>
+                                            <span className="text-[#2F9E69] font-semibold flex items-center gap-0.5">
+                                               {(() => {
+                                                 const text = getEstablishmentDeliveryFeeText(est, selectedAddressId ? (userAddresses.find(a => a.id === selectedAddressId)?.neighborhood || bairro) : bairro);
+                                                 const isFree = text === "Entrega grátis" || text === "Grátis em bairros selecionados";
+                                                 return (
+                                                   <>
+                                                     {isFree && <Bike className="w-3 h-3 text-[#2F9E69]" />}
+                                                     <span>{text}</span>
+                                                   </>
+                                                 );
+                                               })()}
+                                             </span>
+                                        </div>
+                                    </div>
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+
           {clientSubView === 'home' && (
           <motion.div
             initial={{ opacity: 0, y: 15 }}
@@ -1502,126 +1904,164 @@ export const ClientArea: React.FC = () => {
           >
             {/* Banner Carrossel */}
             <div 
-              className="relative rounded-2xl sm:rounded-3xl shadow-xl overflow-hidden min-h-[320px] sm:min-h-[360px]"
+              className="relative rounded-2xl sm:rounded-3xl shadow-xl overflow-hidden h-[280px] sm:h-[320px] md:h-[340px]"
               style={{ touchAction: 'pan-y' }}
               onPointerDown={handlePointerDown}
               onPointerUp={handlePointerUp}
+              onMouseEnter={() => setIsHovered(true)}
+              onMouseLeave={() => setIsHovered(false)}
             >
               <AnimatePresence mode="wait">
-                {/* Slide 1: Original Banner */}
-                {activeIndex === 0 && (
-                  <motion.div
-                    key="slide1"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="absolute inset-0 bg-gradient-to-br from-[#E94F2F] to-[#BD351C] text-white p-6 sm:p-8 md:p-12 flex flex-col justify-center"
-                  >
-                    <div className="absolute right-0 bottom-0 top-0 w-1/3 opacity-15 hidden md:block">
-                      <img 
-                        src="https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600&auto=format&fit=crop&q=60" 
-                        alt="Background Pizza" 
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                        loading="eager"
-                        decoding="async"
-                        {...{ fetchPriority: "high" }}
-                      />
-                    </div>
-                    <div className="max-w-2xl relative z-10 space-y-3 sm:space-y-4">
-                      <span className="bg-[#FFBE5C] text-[#201A17] text-[10px] sm:text-xs font-black px-2.5 py-1 rounded-full uppercase tracking-wider">
-                        Startup Regional
-                      </span>
-                      <h2 className="text-2xl sm:text-3xl md:text-4xl font-black tracking-tight leading-tight">
-                        O melhor da sua cidade, em um só lugar.
-                      </h2>
-                      <p className="text-xs sm:text-sm md:text-base text-white/95 font-medium leading-relaxed max-w-lg">
-                        Encontre restaurantes, mercados e sabores locais. Peça pelo celular e acompanhe tudo em tempo real.
-                      </p>
-                      
-                      {/* Search Bar */}
-                      <div className="pt-2">
-                        <div className="bg-white rounded-2xl p-1.5 shadow-lg flex items-center gap-2 max-w-md border border-[#EADFD8]">
-                          <Search className="w-5 h-5 text-[#756B66] ml-3" />
-                          <input
-                            type="text"
-                            placeholder="Busque por comida ou estabelecimento..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="flex-1 px-1 py-2 text-sm text-[#201A17] outline-none placeholder:text-[#756B66]"
-                          />
-                          {searchQuery && (
-                            <button onClick={() => setSearchQuery('')} className="text-[#756B66] hover:text-[#201A17]">
-                              <X className="w-4 h-4" />
-                            </button>
+                {homeSlides.map((slide, index) => {
+                  if (activeIndex !== index) return null;
+                  const isDarkBg = slide.bgClass.includes('text-white');
+                  return (
+                    <motion.div
+                      key={slide.id}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.3 }}
+                      className={`absolute inset-0 flex flex-row items-stretch overflow-hidden ${slide.bgClass}`}
+                    >
+                      {/* Left Column: Premium Content Area */}
+                      <div className="w-[62%] sm:w-[58%] md:w-[55%] flex flex-col justify-center p-5 sm:p-8 md:p-12 relative z-10 select-none pb-14 sm:pb-16 md:pb-16">
+                        <div className="space-y-2 sm:space-y-3 md:space-y-4 max-w-xl">
+                          {slide.badge && (
+                            <span className={`inline-block text-[9px] sm:text-[10px] md:text-xs font-black px-2.5 py-1 rounded-full uppercase tracking-wider ${slide.badgeBg}`}>
+                              {slide.badge}
+                            </span>
+                          )}
+                          <h2 className="text-lg sm:text-2xl md:text-3xl lg:text-4xl font-black tracking-tight leading-tight sm:leading-snug">
+                            {slide.title}
+                          </h2>
+                          <p className={`text-[10px] sm:text-xs md:text-sm lg:text-base font-medium leading-relaxed max-w-md line-clamp-3 sm:line-clamp-none ${
+                            isDarkBg ? 'text-white/90' : 'text-[#756B66]'
+                          }`}>
+                            {slide.subtitle}
+                          </p>
+
+                          {/* Search Bar specific to Slide 1 */}
+                          {slide.hasSearch && (
+                            <div className="pt-1 sm:pt-2">
+                              <div className="bg-white rounded-xl sm:rounded-2xl p-1 sm:p-1.5 shadow-md flex items-center gap-1.5 sm:gap-2 max-w-xs sm:max-w-md border border-[#EADFD8]">
+                                <Search className="w-4 h-4 sm:w-5 sm:h-5 text-[#756B66] ml-2 sm:ml-3 shrink-0" />
+                                <input
+                                  type="text"
+                                  placeholder="Busque por comida ou loja..."
+                                  value={searchQuery}
+                                  onChange={(e) => {
+                                    setSearchQuery(e.target.value);
+                                    handleUserInteraction();
+                                  }}
+                                  className="flex-1 min-w-0 px-0.5 py-1 sm:py-2 text-xs sm:text-sm text-[#201A17] outline-none placeholder:text-[#756B66]"
+                                />
+                                {searchQuery && (
+                                  <button onClick={() => {
+                                    setSearchQuery('');
+                                    handleUserInteraction();
+                                  }} className="text-[#756B66] hover:text-[#201A17] p-1 shrink-0">
+                                    <X className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* CTA button if present */}
+                          {slide.cta && (
+                            <div className="pt-1 sm:pt-2">
+                              <button 
+                                onClick={() => {
+                                  handleUserInteraction();
+                                  if (slide.cta.action === 'fidelity') {
+                                    setIsFidelityModalOpen(true);
+                                  } else if (slide.cta.action === 'categories_modal') {
+                                    setIsAllCategoriesModalOpen(true);
+                                  } else if (slide.cta.action === 'explore_tab') {
+                                    setClientSubView('explore');
+                                    setSelectedCategory('Destaques');
+                                  }
+                                }}
+                                className={`px-4 sm:px-6 py-2 sm:py-3 rounded-lg sm:rounded-xl font-black text-[11px] sm:text-xs md:text-sm transition-colors shadow-md cursor-pointer inline-flex items-center gap-2 ${
+                                  isDarkBg 
+                                    ? 'bg-white text-[#201A17] hover:bg-white/90' 
+                                    : 'bg-[#E94F2F] text-white hover:bg-[#BD351C]'
+                                }`}
+                              >
+                                {slide.cta.text}
+                              </button>
+                            </div>
                           )}
                         </div>
                       </div>
-                    </div>
-                  </motion.div>
-                )}
 
-                {/* Slide 2: Fidelity Banner */}
-                {activeIndex === 1 && (
-                  <motion.div
-                    key="slide2"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.3 }}
-                    className="absolute inset-0 bg-[#FFF5EE] text-[#201A17] p-6 sm:p-8 md:p-12 flex flex-col justify-center border border-[#EADFD8]"
-                  >
-                    <div className="max-w-xl relative z-10 space-y-3 sm:space-y-4">
-                      <span className="bg-[#E94F2F] text-white text-[10px] sm:text-xs font-black px-2.5 py-1 rounded-full uppercase tracking-wider">
-                        FIDELIDADE UAI
-                      </span>
-                      <h2 className="text-2xl sm:text-3xl md:text-4xl font-black tracking-tight leading-tight text-[#E94F2F]">
-                        Compre pertim.<br />Ganhe pontos.<br />Aproveite mais.
-                      </h2>
-                      <p className="text-xs sm:text-sm md:text-base text-[#756B66] font-medium leading-relaxed max-w-lg">
-                        A cada pedido concluído, você acumula Pão de Queijo Points para trocar por descontos e benefícios.
-                      </p>
-                      <div className="pt-2">
-                        <button 
-                            onClick={() => setIsFidelityModalOpen(true)}
-                            className="bg-[#E94F2F] text-white px-6 py-3 rounded-xl font-black text-sm hover:bg-[#BD351C] transition-colors shadow-lg"
-                        >
-                          Conhecer o programa
-                        </button>
-                      </div>
-                    </div>
-                    {/* Visual composition for fidelity */}
-                    <div className="absolute right-8 top-1/2 -translate-y-1/2 w-48 h-48 hidden md:flex items-center justify-center">
-                      <div className="relative w-40 h-32 bg-[#FFBE5C] rounded-xl shadow-lg rotate-3 p-4 flex flex-col justify-between">
-                         <div className="flex justify-between items-start">
-                            <Medal className="w-6 h-6 text-[#E94F2F]" />
-                            <span className="text-[9px] font-black text-[#201A17] bg-white/50 px-1.5 py-0.5 rounded">BRONZE</span>
-                         </div>
-                         <div className="space-y-1">
-                            <div className="text-xl font-black text-[#201A17]">+30</div>
-                            <div className="w-full h-1 bg-white/50 rounded-full overflow-hidden">
-                                <div className="w-1/3 h-full bg-[#E94F2F]" />
+                      {/* Right Column: Decorative Visual Column */}
+                      <div className="w-[38%] sm:w-[42%] md:w-[45%] relative overflow-hidden shrink-0 select-none">
+                        {slide.bgImage && (
+                          <>
+                            <img 
+                              src={slide.bgImage} 
+                              alt={slide.title} 
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                              loading="eager"
+                              decoding="async"
+                            />
+                            {/* Linear overlay to smoothly blend image with background color/gradient */}
+                            <div className={`absolute inset-y-0 left-0 w-8 sm:w-16 md:w-24 bg-gradient-to-r ${
+                              slide.id === 'startup-regional' ? 'from-[#E94F2F]' :
+                              slide.id === 'comercio-local' ? 'from-[#FFF5EE]' :
+                              slide.id === 'categorias' ? 'from-[#FDF3F0]' :
+                              slide.id === 'parceiros' ? 'from-[#201A17]' :
+                              'from-[#FFBE5C]'
+                            } to-transparent z-10`} />
+                          </>
+                        )}
+
+                        {/* Special fidelity visual overlay */}
+                        {slide.hasFidelityCard && (
+                          <div className="absolute inset-0 bg-[#FFF5EE]/40 backdrop-blur-[0.5px] hidden sm:flex items-center justify-center p-3 sm:p-4 z-20 pointer-events-none">
+                            <div className="w-full max-w-[170px] md:max-w-[190px] bg-[#FFBE5C] rounded-xl shadow-lg p-3 sm:p-4 flex flex-col justify-between aspect-[1.4] scale-90 md:scale-100 transition-all border border-[#EADFD8]">
+                              <div className="flex justify-between items-start">
+                                <Medal className="w-5 h-5 text-[#E94F2F]" />
+                                <span className="text-[8px] font-black text-[#201A17] bg-white/50 px-1.5 py-0.5 rounded">BRONZE</span>
+                              </div>
+                              <div className="space-y-1">
+                                <div className="text-sm md:text-base font-black text-[#201A17]">+30 PTS</div>
+                                <div className="w-full h-1 bg-white/50 rounded-full overflow-hidden">
+                                  <div className="w-1/3 h-full bg-[#E94F2F]" />
+                                </div>
+                              </div>
                             </div>
-                         </div>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  </motion.div>
-                )}
+                    </motion.div>
+                  );
+                })}
               </AnimatePresence>
 
-              {/* Navigation Controls */}
-              <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-2 z-20">
-                {[0, 1].map((index) => (
-                  <button
-                    key={index}
-                    onClick={() => setActiveIndex(index)}
-                    className={`w-2 h-2 rounded-full transition-all ${
-                      activeIndex === index ? 'bg-[#E94F2F] w-6' : 'bg-[#E94F2F]/30'
-                    }`}
-                    aria-label={`Ir para slide ${index + 1}`}
-                  />
-                ))}
+              {/* Navigation Indicators aligned to Left Content Area for premium visibility */}
+              <div className="absolute bottom-4 left-5 sm:left-8 md:left-12 flex gap-2 z-20">
+                {homeSlides.map((slide, index) => {
+                  const isDarkBg = slide.bgClass.includes('text-white');
+                  return (
+                    <button
+                      key={slide.id}
+                      onClick={() => {
+                        setActiveIndex(index);
+                        handleUserInteraction();
+                      }}
+                      className={`w-2 h-2 rounded-full transition-all cursor-pointer ${
+                        activeIndex === index 
+                          ? (isDarkBg ? 'bg-white w-6' : 'bg-[#E94F2F] w-6') 
+                          : (isDarkBg ? 'bg-white/30' : 'bg-[#E94F2F]/20')
+                      }`}
+                      aria-label={`Ir para slide ${index + 1}`}
+                    />
+                  );
+                })}
               </div>
             </div>
 
@@ -1768,7 +2208,7 @@ export const ClientArea: React.FC = () => {
             {/* Lista de Estabelecimentos */}
             <div className="space-y-4">
               <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                <h3 id="establishments-section-title" className="text-xl font-black text-[#201A17] tracking-tight flex flex-wrap items-center gap-1.5">
+                <h3 id="establishments-section-title" className="text-xl font-black text-[#201A17] tracking-tight">
                   {(() => {
                     const prefix = (() => {
                       if (selectedCategory === 'Todos') return 'Estabelecimentos';
@@ -1781,9 +2221,9 @@ export const ClientArea: React.FC = () => {
                     })();
                     return (
                       <>
-                        <span>{prefix}</span>
+                        <span className="whitespace-nowrap">{prefix} em </span>
                         <span className="text-[#E94F2F] font-black">
-                          em {selectedCity.name}
+                          {selectedCity.name}
                         </span>
                       </>
                     );
@@ -1873,7 +2313,7 @@ export const ClientArea: React.FC = () => {
                         tabIndex={isAberto ? 0 : -1}
                         role={isAberto ? "button" : undefined}
                         aria-disabled={!isAberto ? "true" : undefined}
-                        aria-label={isAberto ? `Ver cardápio de ${est.name}` : `Estabelecimento fechado. ${nextTimeText || ''}`}
+                        aria-label={isAberto ? `Ver catálogo de ${est.name}` : `Estabelecimento fechado. ${nextTimeText || ''}`}
                         className={
                           isAberto
                             ? `bg-white rounded-2xl border p-3 sm:p-4 flex flex-row gap-3 sm:gap-4 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer relative ${
@@ -1902,14 +2342,24 @@ export const ClientArea: React.FC = () => {
                               </span>
                             </div>
                             <p className={`text-[11px] sm:text-xs text-[#756B66] font-medium mt-0.5 ${!isAberto ? 'opacity-65' : ''}`}>
-                              {getCategoryLabel(est.category || est.categoryId)} • {est.city}
+                              {getEstablishmentCardLabel(est.category || est.categoryId)} • {est.city}
                               {nextTimeText && <span className="block text-[10px] sm:text-[11px] text-[#C44327] font-semibold mt-1">{nextTimeText}</span>}
                             </p>
                             
                             <div className={`flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1 mt-1.5 text-[10px] sm:text-xs text-[#201A17] font-semibold ${!isAberto ? 'opacity-65' : ''}`}>
-                              <span className="flex items-center gap-0.5 text-amber-600">
+                              <span 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleViewMenu(est.id, 'reviews');
+                                }}
+                                className="flex items-center gap-0.5 text-amber-600 cursor-pointer hover:underline"
+                              >
                                 <Star className="w-3 h-3 sm:w-3.5 sm:h-3.5 fill-current text-[#FFBE5C]" />
-                                {est.rating}
+                                {est.ratingCount !== undefined && est.ratingCount > 0
+                                  ? `${est.ratingAverage?.toFixed(1) || est.rating.toFixed(1)} (${est.ratingCount})`
+                                  : est.ratingCount === 0
+                                    ? 'Sem avaliações'
+                                    : est.rating?.toFixed(1)}
                               </span>
                               <span className="text-[#EADFD8]">|</span>
                               <span className="flex items-center gap-0.5 text-[#756B66]">
@@ -1917,12 +2367,17 @@ export const ClientArea: React.FC = () => {
                                 {est.deliveryTime || 'Prazo sob consulta'}
                               </span>
                               <span className="text-[#EADFD8]">|</span>
-                              <span className="text-[#2F9E69]">
-                                {est.deliveryFee === undefined || est.deliveryFee === null
-                                  ? 'Calcular entrega'
-                                  : est.deliveryFee === 0 
-                                    ? 'Grátis' 
-                                    : `R$ ${est.deliveryFee.toFixed(2).replace('.', ',')}`}
+                              <span className="text-[#2F9E69] font-semibold flex items-center gap-1">
+                                {(() => {
+                                  const text = getEstablishmentDeliveryFeeText(est, selectedAddressId ? (userAddresses.find(a => a.id === selectedAddressId)?.neighborhood || bairro) : bairro);
+                                  const isFree = text === "Entrega grátis" || text === "Grátis em bairros selecionados";
+                                  return (
+                                    <>
+                                      {isFree && <Bike className="w-3.5 h-3.5 inline text-[#2F9E69]" />}
+                                      <span>{text}</span>
+                                    </>
+                                  );
+                                })()}
                               </span>
                             </div>
                           </div>
@@ -1985,12 +2440,17 @@ export const ClientArea: React.FC = () => {
                   className="w-full h-full object-cover" 
                 />
                 {/* Delivery Fee Badge */}
-                <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-sm text-neutral-900 text-[10px] font-bold px-3 py-1.5 rounded-full shadow-lg">
-                  {currentEst.deliveryFee === undefined || currentEst.deliveryFee === null
-                    ? 'Calcular entrega'
-                    : currentEst.deliveryFee === 0 
-                      ? 'Entrega grátis' 
-                      : `Entrega R$ ${currentEst.deliveryFee.toFixed(2).replace('.', ',')}`}
+                <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-sm text-neutral-900 text-[10px] font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1">
+                  {(() => {
+                    const text = getEstablishmentDeliveryFeeText(currentEst, selectedAddressId ? (userAddresses.find(a => a.id === selectedAddressId)?.neighborhood || bairro) : bairro);
+                    const isFree = text === "Entrega grátis" || text === "Grátis em bairros selecionados";
+                    return (
+                      <>
+                        {isFree && <Bike className="w-3.5 h-3.5 text-[#2F9E69]" />}
+                        <span className={isFree ? "text-[#2F9E69]" : ""}>{text}</span>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
 
@@ -2036,16 +2496,37 @@ export const ClientArea: React.FC = () => {
                       })()}
                     </div>
                     <p className="text-sm text-[#756B66] font-medium leading-relaxed">
-                      {getCategoryLabel(currentEst.category || currentEst.categoryId)} • {currentEst.address} • {currentEst.phone}
+                      {getEstablishmentCardLabel(currentEst.category || currentEst.categoryId)} • {currentEst.address} • {currentEst.phone}
                     </p>
                   </div>
 
                   {/* Indicators Grid */}
                   <div className={`grid ${(currentEst.isFeaturedPartner || currentEst.featured || currentEst.id === 'pizzaria-da-praca') ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-2 md:grid-cols-3'} gap-3 pt-4 border-t border-[#F7F4EF]`}>
-                    <div className="px-3 py-2 bg-[#F7F4EF]/50 rounded-xl border border-[#F7F4EF]">
+                    <div 
+                      onClick={() => {
+                        setEstablishmentTab('reviews');
+                        setTimeout(() => {
+                          const el = document.getElementById('customer-reviews-section');
+                          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }, 100);
+                      }}
+                      className="px-3 py-2 bg-[#F7F4EF]/50 rounded-xl border border-[#F7F4EF] cursor-pointer hover:bg-white hover:border-[#EADFD8] transition-all"
+                    >
                       <p className="text-[9px] text-[#A39994] font-black uppercase tracking-wider leading-none">Avaliação</p>
                       <p className="text-sm font-black text-[#201A17] mt-1 flex items-center gap-1">
-                        <Star className="w-3 h-3 fill-current text-[#FFBE5C]" /> {currentEst.rating}
+                        <Star className="w-3 h-3 fill-current text-[#FFBE5C]" /> 
+                        {currentEst.ratingCount !== undefined && currentEst.ratingCount > 0 ? (
+                          <>
+                            {currentEst.ratingAverage?.toFixed(1) || currentEst.rating.toFixed(1)} 
+                            <span className="text-[10px] text-[#756B66] font-normal">({currentEst.ratingCount})</span>
+                          </>
+                        ) : currentEst.ratingCount === 0 ? (
+                          <span className="text-xs text-[#756B66] font-medium">Sem avaliações</span>
+                        ) : (
+                          <>
+                            {currentEst.rating?.toFixed(1) || '4.5'}
+                          </>
+                        )}
                       </p>
                     </div>
                     <div className="px-3 py-2 bg-[#F7F4EF]/50 rounded-xl border border-[#F7F4EF]">
@@ -2085,14 +2566,14 @@ export const ClientArea: React.FC = () => {
                   </h4>
                   <p className="text-xs text-rose-800 font-medium leading-relaxed">
                     {currentEst.suspended === true ? (
-                      "Pedimos desculpas pelo transtorno. O cardápio continua disponível para consulta."
+                      "Pedimos desculpas pelo transtorno. O catálogo continua disponível para consulta."
                     ) : currentEst.temporarilyPaused === true ? (
                       "O estabelecimento pausou o recebimento de novos pedidos por alguns instantes."
                     ) : currentEst.acceptingOrders === false ? (
-                      "O cardápio continua disponível para consulta."
+                      "O catálogo continua disponível para consulta."
                     ) : (
                       <>
-                        Você pode consultar o cardápio, mas novos pedidos só poderão ser feitos quando a loja estiver aberta.
+                        Você pode consultar o catálogo, mas novos pedidos só poderão ser feitos quando o estabelecimento estiver aberto.
                         {getNextOpeningTimeText(businessHours) && (
                           <span className="block text-rose-700 font-black mt-1">
                             {getNextOpeningTimeText(businessHours)}
@@ -2108,124 +2589,290 @@ export const ClientArea: React.FC = () => {
               </div>
             )}
 
-            {/* Menu Sections & Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-              {/* Category Anchor Side Menu */}
-              <div className="lg:col-span-1 space-y-2 lg:sticky lg:top-[180px] self-start">
-                <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider px-3">Categorias do Cardápio</h4>
-                <div className="bg-white rounded-2xl border border-[#EADFD8] p-2 space-y-1">
-                  {menuCategories.length === 0 ? (
-                    <p className="text-xs text-[#756B66] p-3 text-center font-medium">Nenhuma categoria cadastrada.</p>
-                  ) : (
-                    menuCategories.map((cat) => (
-                      <a
-                        key={cat.id}
-                        href={`#cat-${cat.id}`}
-                        className="block px-3 py-2 rounded-xl text-xs font-bold text-[#756B66] hover:bg-[#F7F4EF] hover:text-[#201A17] transition-colors"
-                      >
-                        {cat.name}
-                      </a>
-                    ))
-                  )}
-                </div>
+            {/* Tab Bar Navigation */}
+            <div className="border-b border-[#EADFD8]/60 pb-px flex overflow-x-auto scrollbar-none shrink-0 -mx-4 px-4 md:mx-0 md:px-0">
+              <div className="flex gap-1 md:gap-2">
+                {(['menu', 'info', 'reviews'] as const).map((tab) => {
+                  const isActive = establishmentTab === tab;
+                  const label = tab === 'menu' ? 'Catálogo' : tab === 'info' ? 'Informações' : 'Avaliações';
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => setEstablishmentTab(tab)}
+                      className={`relative px-4 py-2.5 text-xs sm:text-sm font-black transition-all border-b-2 shrink-0 ${
+                        isActive
+                          ? 'border-[#E94F2F] text-[#E94F2F]'
+                          : 'border-transparent text-[#756B66] hover:text-[#201A17]'
+                      }`}
+                    >
+                      {label}
+                      {tab === 'reviews' && currentEst.ratingCount !== undefined && currentEst.ratingCount > 0 && (
+                        <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] ${
+                          isActive ? 'bg-[#E94F2F]/10 text-[#E94F2F]' : 'bg-[#F7F4EF] text-[#756B66]'
+                        }`}>
+                          {currentEst.ratingCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
+            </div>
 
-              {/* Products list grouped by Category */}
-              <div className="lg:col-span-3 space-y-10">
-                {menuCategories.length === 0 ? (
-                  <div className="bg-white p-12 text-center rounded-3xl border border-[#EADFD8]">
-                    <p className="text-[#756B66] font-medium">Este estabelecimento ainda não cadastrou produtos no cardápio.</p>
-                  </div>
-                ) : (
-                  menuCategories.map((cat) => {
-                    const catProducts = currentProducts.filter(p => p.menuCategoryId === cat.id && p.available !== false && (p as any).active !== false);
-                    return (
-                      <div 
-                        key={cat.id} 
-                        id={`cat-${cat.id}`}
-                        className="space-y-4 scroll-mt-48"
-                      >
-                        <h3 className="text-xl font-black text-[#201A17] border-b border-[#EADFD8] pb-2 tracking-tight">
+            {/* Tab Content Rendering */}
+            {establishmentTab === 'menu' && (
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+                {/* Category Anchor Side Menu */}
+                <div className="lg:col-span-1 space-y-2 lg:sticky lg:top-[180px] self-start">
+                  <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider px-3">Categorias do Catálogo</h4>
+                  <div className="bg-white rounded-2xl border border-[#EADFD8] p-2 space-y-1">
+                    {menuCategories.length === 0 ? (
+                      <p className="text-xs text-[#756B66] p-3 text-center font-medium">Nenhuma categoria cadastrada.</p>
+                    ) : (
+                      menuCategories.map((cat) => (
+                        <a
+                          key={cat.id}
+                          href={`#cat-${cat.id}`}
+                          className="block px-3 py-2 rounded-xl text-xs font-bold text-[#756B66] hover:bg-[#F7F4EF] hover:text-[#201A17] transition-colors"
+                        >
                           {cat.name}
-                        </h3>
+                        </a>
+                      ))
+                    )}
+                  </div>
+                </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-                          {catProducts.map((prod, idx) => (
-                            <div
-                              key={prod.id}
-                              onClick={() => handleOpenProduct(prod)}
-                              className={`group bg-white rounded-2xl border border-[#EADFD8]/50 p-4 flex gap-4 cursor-pointer hover:border-[#E94F2F]/30 hover:shadow-md hover:shadow-orange-500/[0.01] transition-all duration-300 relative ${
-                                !prod.available ? 'opacity-65' : ''
-                              }`}
-                            >
-                              <div className="flex-1 flex flex-col justify-between min-w-0">
-                                <div className="space-y-1.5">
-                                  {/* Badges / Status */}
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    {idx === 0 && prod.available && (
-                                      <span className="inline-flex items-center gap-1 text-[9px] font-black text-[#E94F2F] bg-[#E94F2F]/10 px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
-                                        <Sparkles className="w-2.5 h-2.5 shrink-0" /> Mais pedido
-                                      </span>
-                                    )}
-                                    {prod.category.toLowerCase().includes('combo') && prod.available && (
-                                      <span className="inline-flex items-center gap-1 text-[9px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
-                                        <Award className="w-2.5 h-2.5 shrink-0" /> Combo Especial
-                                      </span>
-                                    )}
-                                    {!prod.available && (
-                                      <span className="bg-neutral-100 text-neutral-500 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
-                                        Esgotado
+                {/* Products list grouped by Category */}
+                <div className="lg:col-span-3 space-y-10">
+                  {menuCategories.length === 0 ? (
+                    <div className="bg-white p-12 text-center rounded-3xl border border-[#EADFD8]">
+                      <p className="text-[#756B66] font-medium">Este estabelecimento ainda não cadastrou produtos no catálogo.</p>
+                    </div>
+                  ) : (
+                    menuCategories.map((cat) => {
+                      const catProducts = currentProducts.filter(p => p.menuCategoryId === cat.id && p.available !== false && (p as any).active !== false);
+                      return (
+                        <div 
+                          key={cat.id} 
+                          id={`cat-${cat.id}`}
+                          className="space-y-4 scroll-mt-48"
+                        >
+                          <h3 className="text-xl font-black text-[#201A17] border-b border-[#EADFD8] pb-2 tracking-tight">
+                            {cat.name}
+                          </h3>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                            {catProducts.map((prod, idx) => (
+                              <div
+                                key={prod.id}
+                                onClick={() => handleOpenProduct(prod)}
+                                className={`group bg-white rounded-2xl border border-[#EADFD8]/50 p-4 flex gap-4 cursor-pointer hover:border-[#E94F2F]/30 hover:shadow-md hover:shadow-orange-500/[0.01] transition-all duration-300 relative ${
+                                  !prod.available ? 'opacity-65' : ''
+                                }`}
+                              >
+                                <div className="flex-1 flex flex-col justify-between min-w-0">
+                                  <div className="space-y-1.5">
+                                    {/* Badges / Status */}
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      {isPromotionActive(prod) && (
+                                        <span className={`inline-flex items-center gap-1 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider leading-none ${
+                                          prod.promotionSource === 'uaipertim'
+                                            ? 'text-[#E94F2F] bg-[#E94F2F]/10 border border-[#E94F2F]/20'
+                                            : 'text-emerald-700 bg-emerald-50 border border-emerald-100'
+                                        }`}>
+                                          <Tag className="w-2.5 h-2.5 shrink-0" /> {prod.promotionSource === 'uaipertim' ? 'Oferta UaiPertim' : 'Oferta'}
+                                        </span>
+                                      )}
+                                      {idx === 0 && prod.available && (
+                                        <span className="inline-flex items-center gap-1 text-[9px] font-black text-[#E94F2F] bg-[#E94F2F]/10 px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
+                                          <Flame className="w-2.5 h-2.5 shrink-0" /> Mais pedido
+                                        </span>
+                                      )}
+                                      {prod.category.toLowerCase().includes('combo') && prod.available && (
+                                        <span className="inline-flex items-center gap-1 text-[9px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
+                                          <Award className="w-2.5 h-2.5 shrink-0" /> Combo Especial
+                                        </span>
+                                      )}
+                                      {!prod.available && (
+                                        <span className="bg-neutral-100 text-neutral-500 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
+                                          Esgotado
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <h4 className="font-extrabold text-[#201A17] text-sm md:text-base leading-tight group-hover:text-[#E94F2F] transition-colors duration-200 break-words whitespace-normal overflow-visible h-auto">
+                                      {prod.name}
+                                    </h4>
+                                    <p className="text-[11px] sm:text-xs text-[#756B66] font-medium line-clamp-2 leading-relaxed">
+                                      {prod.description}
+                                    </p>
+                                  </div>
+
+                                  <div 
+                                    className="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-[#F7F4EF]"
+                                    aria-label={
+                                      isPromotionActive(prod)
+                                        ? `Preço promocional: ${prod.promotionalPrice!.toFixed(2).replace('.', ',')} reais. Preço anterior: ${prod.price.toFixed(2).replace('.', ',')} reais. Desconto de ${calculateDiscountPercentage(prod.price, prod.promotionalPrice!)} por cento.`
+                                        : `Preço: ${prod.price.toFixed(2).replace('.', ',')} reais.`
+                                    }
+                                  >
+                                    {isPromotionActive(prod) ? (
+                                      <>
+                                        <span className="text-sm sm:text-base font-black text-[#2F9E69] shrink-0">
+                                          R$ {prod.promotionalPrice!.toFixed(2).replace('.', ',')}
+                                        </span>
+                                        <span className="text-[11px] sm:text-xs text-neutral-400 line-through shrink-0">
+                                          R$ {prod.price.toFixed(2).replace('.', ',')}
+                                        </span>
+                                        <span className="text-[10px] font-black text-[#2F9E69] bg-[#E8F5E9] px-1.5 py-0.5 rounded-md leading-none">
+                                          -{calculateDiscountPercentage(prod.price, prod.promotionalPrice!)}%
+                                        </span>
+                                      </>
+                                    ) : (
+                                      <span className="text-sm sm:text-base font-black text-[#2F9E69] shrink-0">
+                                        R$ {prod.price.toFixed(2).replace('.', ',')}
                                       </span>
                                     )}
                                   </div>
-
-                                  <h4 className="font-extrabold text-[#201A17] text-sm md:text-base leading-tight group-hover:text-[#E94F2F] transition-colors duration-200 truncate">
-                                    {prod.name}
-                                  </h4>
-                                  <p className="text-[11px] sm:text-xs text-[#756B66] font-medium line-clamp-2 leading-relaxed">
-                                    {prod.description}
-                                  </p>
                                 </div>
 
-                                <div className="flex justify-between items-center mt-3 pt-3 border-t border-[#F7F4EF]">
-                                  <span className="text-sm sm:text-base font-black text-[#2F9E69]">
-                                    R$ {prod.price.toFixed(2).replace('.', ',')}
-                                  </span>
-                                  
-                                  {prod.available && (
+                                <div className="flex flex-col justify-between items-stretch gap-2 shrink-0 w-[80px] sm:w-[100px]">
+                                  {prod.image && prod.image.trim() !== "" ? (
+                                    <div className="w-full h-[80px] sm:h-[96px] rounded-2xl overflow-hidden bg-[#FAF8F5] border border-[#EADFD8]/15 shrink-0 shadow-xs relative">
+                                      <img 
+                                        src={prod.image} 
+                                        alt={prod.name} 
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                        referrerPolicy="no-referrer"
+                                        loading="lazy"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="flex-1" />
+                                  )}
+
+                                  {prod.available ? (
                                     canEstablishmentReceiveOrders(currentEst) ? (
-                                      <span className="bg-[#FAF8F5] text-[#E94F2F] group-hover:bg-[#E94F2F] group-hover:text-white border border-[#EADFD8]/40 group-hover:border-transparent p-1.5 sm:p-2 rounded-xl transition-all duration-300 shrink-0 shadow-xs">
-                                        <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4 stroke-[2.5]" />
-                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          handleOpenProduct(prod);
+                                        }}
+                                        aria-label={`Eu quero ${prod.name}`}
+                                        className="w-full bg-[#E94F2F] hover:bg-[#BD351C] text-white font-extrabold text-[11px] sm:text-xs py-2 rounded-xl shadow-xs hover:-translate-y-0.5 active:scale-[0.98] transition-all duration-300 shrink-0 whitespace-nowrap min-h-[36px] sm:min-h-[38px] flex items-center justify-center cursor-pointer text-center"
+                                      >
+                                        Eu quero
+                                      </button>
                                     ) : (
-                                      <span className="text-[9px] sm:text-[10px] text-rose-600 font-black bg-rose-50 border border-rose-100 px-2.5 py-1 rounded-lg transition-colors shrink-0">
+                                      <button
+                                        type="button"
+                                        disabled
+                                        className="w-full text-[9px] sm:text-[10px] text-rose-600 font-black bg-rose-50 border border-rose-100 py-2 rounded-xl transition-colors shrink-0 text-center cursor-not-allowed min-h-[36px] sm:min-h-[38px] flex items-center justify-center whitespace-normal leading-tight"
+                                      >
                                         {currentEst.suspended === true ? "Indisponível" : "Ver detalhes"}
-                                      </span>
+                                      </button>
                                     )
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      disabled
+                                      className="w-full bg-neutral-100 text-neutral-400 text-[10px] sm:text-xs font-black py-2 rounded-xl transition-colors shrink-0 text-center cursor-not-allowed min-h-[36px] sm:min-h-[38px] flex items-center justify-center"
+                                    >
+                                      Esgotado
+                                    </button>
                                   )}
                                 </div>
                               </div>
-
-                              {prod.image && prod.image.trim() !== "" && (
-                                <div className="w-16 h-16 sm:w-20 sm:h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden bg-[#FAF8F5] border border-[#EADFD8]/15 shrink-0 shadow-xs relative self-center">
-                                  <img 
-                                    src={prod.image || undefined} 
-                                    alt={prod.name} 
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                                    referrerPolicy="no-referrer"
-                                    loading="lazy"
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          ))}
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })
-                )}
+                      );
+                    })
+                  )}
+                </div>
               </div>
-            </div>
+            )}
+
+            {establishmentTab === 'info' && (
+              <div className="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-8 text-[#201A17] animate-fade-in">
+                {/* Contact and address info */}
+                <div className="bg-white rounded-3xl border border-[#EADFD8]/60 p-6 md:p-8 space-y-6 shadow-xs">
+                  <div>
+                    <h4 className="text-xs font-black text-[#E94F2F] uppercase tracking-wider mb-2">Sobre Nós</h4>
+                    <p className="text-xs md:text-sm text-[#5C534E] leading-relaxed font-medium">
+                      {currentEst.aboutDescription || currentEst.description || "Nenhuma descrição fornecida pelo estabelecimento."}
+                    </p>
+                  </div>
+
+                  <div className="border-t border-[#FAF8F5] pt-4">
+                    <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider mb-3">Endereço e Contato</h4>
+                    <ul className="space-y-3.5 text-xs md:text-sm font-semibold text-[#5C534E]">
+                      <li className="flex items-start gap-2.5">
+                        <MapPin className="w-4 h-4 text-[#E94F2F] shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-[#201A17] font-extrabold">{currentEst.address}</p>
+                          {currentEst.bairro && <p className="text-xs text-[#756B66] font-medium mt-0.5">{currentEst.bairro}</p>}
+                          {currentEst.cep && <p className="text-[11px] text-[#A39994] font-medium">CEP: {currentEst.cep}</p>}
+                        </div>
+                      </li>
+                      <li className="flex items-center gap-2.5">
+                        <Phone className="w-4 h-4 text-[#E94F2F] shrink-0" />
+                        <span className="font-extrabold text-[#201A17]">{currentEst.phone}</span>
+                      </li>
+                      {currentEst.email && (
+                        <li className="flex items-center gap-2.5">
+                          <Mail className="w-4 h-4 text-[#E94F2F] shrink-0" />
+                          <span className="truncate font-medium">{currentEst.email}</span>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Payments & Neighborhoods info */}
+                <div className="bg-white rounded-3xl border border-[#EADFD8]/60 p-6 md:p-8 space-y-6 shadow-xs">
+                  <div>
+                    <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider mb-3">Formas de Pagamento</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {currentEst.acceptPix !== false && (
+                        <span className="text-xs font-black text-[#2F9E69] bg-[#E8F5E9] px-3.5 py-1.5 rounded-xl border border-emerald-100/60 shadow-xs">Pix</span>
+                      )}
+                      {currentEst.acceptCreditCard !== false && (
+                        <span className="text-xs font-black text-[#2F9E69] bg-[#E8F5E9] px-3.5 py-1.5 rounded-xl border border-emerald-100/60 shadow-xs">Cartão de Crédito</span>
+                      )}
+                      {currentEst.acceptDebitCard !== false && (
+                        <span className="text-xs font-black text-[#2F9E69] bg-[#E8F5E9] px-3.5 py-1.5 rounded-xl border border-emerald-100/60 shadow-xs">Cartão de Débito</span>
+                      )}
+                      {currentEst.acceptContactless !== false && (
+                        <span className="text-xs font-black text-[#2F9E69] bg-[#E8F5E9] px-3.5 py-1.5 rounded-xl border border-emerald-100/60 shadow-xs">Aproximação NFC</span>
+                      )}
+                      {currentEst.acceptCash !== false && (
+                        <span className="text-xs font-black text-[#2F9E69] bg-[#E8F5E9] px-3.5 py-1.5 rounded-xl border border-emerald-100/60 shadow-xs">Dinheiro</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-[#FAF8F5] pt-4">
+                    <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider mb-2">Área de Entrega</h4>
+                    <p className="text-xs md:text-sm text-[#5C534E] leading-relaxed font-medium">
+                      {currentEst.bairrosAtendidos || "Este estabelecimento atende a toda a região da cidade cadastrada."}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {establishmentTab === 'reviews' && (
+              <div className="max-w-4xl mx-auto">
+                <PublicReviews 
+                  establishmentId={currentEst.id} 
+                  ratingAverage={currentEst.ratingAverage}
+                  ratingCount={currentEst.ratingCount}
+                />
+              </div>
+            )}
           </motion.div>
         )}
 
@@ -2258,7 +2905,7 @@ export const ClientArea: React.FC = () => {
                   onClick={() => setClientSubView('home')}
                   className="bg-[#E94F2F] text-white font-bold text-xs px-6 py-2.5 rounded-xl hover:bg-[#BD351C] transition-colors"
                 >
-                  Ver Lojas &amp; Cardápios
+                  Ver Estabelecimentos &amp; Catálogos
                 </button>
               </div>
             ) : (
@@ -2470,7 +3117,7 @@ export const ClientArea: React.FC = () => {
                       </span>
                     )}
                   </div>
-                  <h3 className="text-xl font-black text-[#201A17] tracking-tight leading-none">
+                  <h3 className="text-xl font-black text-[#201A17] tracking-tight leading-tight break-words whitespace-normal overflow-visible h-auto">
                     {selectedProduct.name}
                   </h3>
                   {selectedProduct.description && (
@@ -2520,7 +3167,7 @@ export const ClientArea: React.FC = () => {
                         </div>
                       )}
                       <div className="space-y-1.5">
-                        <h3 className="text-base font-black text-[#201A17] tracking-tight leading-snug">
+                        <h3 className="text-base font-black text-[#201A17] tracking-tight leading-snug break-words whitespace-normal overflow-visible h-auto">
                           {selectedProduct.name}
                         </h3>
                         {selectedProduct.description && (
@@ -2528,9 +3175,39 @@ export const ClientArea: React.FC = () => {
                             {selectedProduct.description}
                           </p>
                         )}
-                        <p className="text-sm font-black text-[#2F9E69] pt-1">
-                          A partir de R$ {selectedProduct.price.toFixed(2).replace('.', ',')}
-                        </p>
+                        {isPromotionActive(selectedProduct) ? (
+                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                            <span className="text-sm font-black text-[#2F9E69]">
+                              R$ {selectedProduct.promotionalPrice!.toFixed(2).replace('.', ',')}
+                            </span>
+                            <span className="text-[11px] text-neutral-400 line-through">
+                              R$ {selectedProduct.price.toFixed(2).replace('.', ',')}
+                            </span>
+                            <span className="text-[10px] font-black text-[#2F9E69] bg-[#E8F5E9] px-1 rounded-md leading-none">
+                              -{calculateDiscountPercentage(selectedProduct.price, selectedProduct.promotionalPrice!)}%
+                            </span>
+                          </div>
+                        ) : (
+                          <p className="text-sm font-black text-[#2F9E69] pt-1">
+                            A partir de R$ {selectedProduct.price.toFixed(2).replace('.', ',')}
+                          </p>
+                        )}
+
+                        {/* Complementary metadata lines - Desktop Position */}
+                        {(selectedProduct.preparedToOrder === true || selectedProduct.freshIngredients === true) && (
+                          <div className="flex flex-wrap items-center gap-2 text-[10px] text-[#756B66] font-extrabold pt-2">
+                            {selectedProduct.preparedToOrder === true && (
+                              <span className="flex items-center gap-1 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-full leading-none">
+                                <Clock className="w-3.5 h-3.5 text-[#E94F2F]" /> Feito na hora
+                              </span>
+                            )}
+                            {selectedProduct.freshIngredients === true && (
+                              <span className="flex items-center gap-1 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-full leading-none">
+                                <Heart className="w-3.5 h-3.5 text-emerald-600" /> Ingredientes frescos
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                       
                       {/* Customer Observation/Notes - Desktop Position */}
@@ -2555,7 +3232,7 @@ export const ClientArea: React.FC = () => {
                       {/* MOBILE Sheet Header Block (Section 3 & 4) */}
                       <div className={`lg:hidden text-left bg-white px-5 pt-6 pb-5 border-b border-[#EADFD8]/30 ${selectedProduct.image && selectedProduct.image.trim() !== '' ? '-mt-8 rounded-t-[32px] shadow-[0_-8px_24px_rgba(32,26,23,0.03)]' : 'pt-4'} relative z-10`}>
                         {/* Name and Description */}
-                        <h3 className="text-xl sm:text-2xl font-black text-[#201A17] tracking-tight leading-snug mb-2">
+                        <h3 className="text-xl sm:text-2xl font-black text-[#201A17] tracking-tight leading-snug mb-2 break-words whitespace-normal overflow-visible h-auto">
                           {selectedProduct.name}
                         </h3>
                         {selectedProduct.description && (
@@ -2565,32 +3242,54 @@ export const ClientArea: React.FC = () => {
                         )}
                         
                         {/* Complementary metadata lines (Section 4) */}
-                        <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#756B66] font-extrabold mb-5 pb-4 border-b border-[#F7F4EF]">
-                          <span className="flex items-center gap-1 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-full leading-none">
-                            <Clock className="w-3.5 h-3.5 text-[#E94F2F]" /> Feito na hora
-                          </span>
-                          <span className="flex items-center gap-1 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-full leading-none">
-                            <Heart className="w-3.5 h-3.5 text-emerald-600" /> Ingredientes frescos
-                          </span>
-                        </div>
+                        {(selectedProduct.preparedToOrder === true || selectedProduct.freshIngredients === true) && (
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#756B66] font-extrabold mb-5 pb-4 border-b border-[#F7F4EF]">
+                            {selectedProduct.preparedToOrder === true && (
+                              <span className="flex items-center gap-1 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-full leading-none">
+                                <Clock className="w-3.5 h-3.5 text-[#E94F2F]" /> Feito na hora
+                              </span>
+                            )}
+                            {selectedProduct.freshIngredients === true && (
+                              <span className="flex items-center gap-1 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-full leading-none">
+                                <Heart className="w-3.5 h-3.5 text-emerald-600" /> Ingredientes frescos
+                              </span>
+                            )}
+                          </div>
+                        )}
 
                         {/* Prices & Quero CTA block (Section 4, 5 & 6) */}
                         <div className="flex items-center justify-between gap-4">
                           <div className="flex flex-col">
                             <p className="text-[9px] text-[#756B66]/80 font-black uppercase tracking-widest mb-1 leading-none">Preço a partir de</p>
                             <div className="flex items-baseline gap-2">
-                              {selectedProduct.category.toLowerCase().includes('combo') && (
-                                <span className="text-xs text-[#756B66]/60 line-through font-bold">
-                                  R$ {(selectedProduct.price * 1.25).toFixed(2).replace('.', ',')}
-                                </span>
-                              )}
-                              <span className="text-xl sm:text-2xl font-black text-[#2F9E69] leading-none">
-                                R$ {selectedProduct.price.toFixed(2).replace('.', ',')}
-                              </span>
-                              {selectedProduct.category.toLowerCase().includes('combo') && (
-                                <span className="bg-[#2F9E69]/10 text-[#2F9E69] text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
-                                  Combo Especial
-                                </span>
+                              {isPromotionActive(selectedProduct) ? (
+                                <>
+                                  <span className="text-xl sm:text-2xl font-black text-[#2F9E69] leading-none">
+                                    R$ {selectedProduct.promotionalPrice!.toFixed(2).replace('.', ',')}
+                                  </span>
+                                  <span className="text-xs text-[#756B66]/60 line-through font-bold">
+                                    R$ {selectedProduct.price.toFixed(2).replace('.', ',')}
+                                  </span>
+                                  <span className="bg-[#E8F5E9] text-[#2F9E69] text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
+                                    -{calculateDiscountPercentage(selectedProduct.price, selectedProduct.promotionalPrice!)}% OFF
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  {selectedProduct.category.toLowerCase().includes('combo') && (
+                                    <span className="text-xs text-[#756B66]/60 line-through font-bold">
+                                      R$ {(selectedProduct.price * 1.25).toFixed(2).replace('.', ',')}
+                                    </span>
+                                  )}
+                                  <span className="text-xl sm:text-2xl font-black text-[#2F9E69] leading-none">
+                                    R$ {selectedProduct.price.toFixed(2).replace('.', ',')}
+                                  </span>
+                                  {selectedProduct.category.toLowerCase().includes('combo') && (
+                                    <span className="bg-[#2F9E69]/10 text-[#2F9E69] text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider leading-none">
+                                      Combo Especial
+                                    </span>
+                                  )}
+                                </>
                               )}
                             </div>
                           </div>
@@ -2614,44 +3313,36 @@ export const ClientArea: React.FC = () => {
                             .filter(group => group.active)
                             .map((group) => {
                               const selection = selectedOptionGroups.find(sg => sg.groupId === group.id);
-                              const selectedCount = selection?.selectedOptions.reduce((sum, so) => sum + (so.quantity ?? 1), 0) || 0;
+                              const totalSelected = group.allowOptionQuantity
+                                ? (selection?.selectedOptions.reduce((sum, o) => sum + (o.quantity ?? 1), 0) || 0)
+                                : (selection?.selectedOptions.length || 0);
                               const isSegmented = group.displayType === 'segmented';
                               const isInvalid = invalidGroupIds.includes(group.id);
-                              const isSingle = group.maxSelections === 1;
+                              const isSingle = group.maxSelect === 1 && !group.allowOptionQuantity;
 
-                              const getHelperText = () => {
-                                if (group.required) {
-                                  if (isSingle) {
-                                    return selectedCount === 1 ? "Selecionado" : "Escolha 1";
-                                  } else {
-                                    return `${selectedCount} de ${group.maxSelections}`;
-                                  }
-                                } else {
-                                  if (isSingle) {
-                                    return selectedCount === 1 ? "Selecionado" : "Até 1";
-                                  } else {
-                                    return `${selectedCount} de ${group.maxSelections}`;
-                                  }
-                                }
-                              };
+                              const unitTerm = group.allowOptionQuantity
+                                ? 'unidades'
+                                : (group.maxSelect === 1 ? 'opção' : 'opções');
+
+                              const helperText = `${totalSelected} de ${group.maxSelect} ${unitTerm}`;
 
                               return (
                                 <div
                                   key={group.id}
                                   id={`group-${group.id}`}
-                                  className={`bg-white p-5 sm:p-6 rounded-3xl border transition-all duration-300 space-y-4 shadow-[0_2px_12px_rgba(32,26,23,0.01)] ${
+                                  className={`bg-white p-6 sm:p-7 rounded-3xl border transition-all duration-300 space-y-5 shadow-[0_2px_8px_rgba(32,26,23,0.02)] ${
                                     isInvalid
                                       ? 'border-rose-400 bg-rose-50/10 shadow-md shadow-rose-100/30'
-                                      : 'border-[#EADFD8]/40 hover:border-[#EADFD8]/80'
+                                      : 'border-[#EADFD8]/30 hover:border-[#EADFD8]/60 hover:shadow-[0_4px_16px_rgba(32,26,23,0.04)]'
                                   }`}
                                 >
                                   {/* Group Header conforming to Linha Principal & Linha Auxiliar requirement */}
-                                  <div className="space-y-1.5 pb-1 text-left border-b border-[#F7F4EF]/50">
+                                  <div className="space-y-2 pb-3 text-left border-b border-[#F7F4EF]">
                                     <div className="flex justify-between items-center gap-4">
-                                      <h4 className="text-sm sm:text-base font-black text-[#201A17] tracking-tight">
+                                      <h4 className="text-sm sm:text-base font-extrabold text-[#201A17] tracking-tight">
                                         {group.name}
                                       </h4>
-                                      <span className={`text-[9px] font-black px-2.5 py-1 rounded-full uppercase tracking-wider shrink-0 ${
+                                      <span className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider shrink-0 whitespace-nowrap leading-none ${
                                         group.required
                                           ? 'bg-[#201A17] text-white'
                                           : 'bg-neutral-100 text-[#756B66]'
@@ -2660,35 +3351,37 @@ export const ClientArea: React.FC = () => {
                                       </span>
                                     </div>
                                     
-                                    {(group.description || group.maxSelections > 0) && (
-                                      <div className="flex justify-between items-start gap-4 text-xs font-medium text-[#756B66]">
+                                    {(group.description || group.maxSelect > 0) && (
+                                      <div className="flex justify-between items-start gap-4 text-xs font-semibold text-[#756B66]">
                                         <div className="flex-1 min-w-0">
                                           {group.description ? (
-                                            <p className="text-[11px] sm:text-xs leading-relaxed text-[#756B66]/80 break-words font-semibold">
+                                            <p className="text-[11px] sm:text-xs leading-relaxed text-[#756B66]/80 break-words font-medium">
                                               {group.description}
                                             </p>
                                           ) : (
-                                            <p className="text-[11px] sm:text-xs leading-relaxed text-[#756B66]/50">
+                                            <p className="text-[11px] sm:text-xs leading-relaxed text-[#756B66]/40">
                                               Selecione as opções desejadas
                                             </p>
                                           )}
                                         </div>
-                                        <div className="shrink-0 pt-0.5">
-                                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-md transition-all duration-200 uppercase tracking-wide whitespace-nowrap ${
-                                            selectedCount >= (group.minSelections || 0) && (isSingle ? selectedCount === 1 : selectedCount > 0)
-                                              ? 'text-emerald-700 bg-emerald-50' 
-                                              : 'text-[#756B66]/80 bg-[#FAF8F5]'
-                                          }`}>
-                                            {selectedCount >= (group.minSelections || 0) && selectedCount > 0 ? (
-                                              <span className="flex items-center gap-1">
-                                                <Check className="w-3 h-3 stroke-[3]" />
-                                                {isSingle ? 'Completo' : `${selectedCount} de ${group.maxSelections}`}
-                                              </span>
-                                            ) : (
-                                              getHelperText()
-                                            )}
-                                          </span>
-                                        </div>
+                                        {group.maxSelect > 0 && (
+                                          <div className="shrink-0 pt-0.5">
+                                            <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md transition-all duration-200 uppercase tracking-wide whitespace-nowrap leading-none ${
+                                              totalSelected >= (group.minSelect || 0) && totalSelected > 0
+                                                ? 'text-emerald-700 bg-emerald-50' 
+                                                : 'text-[#756B66]/80 bg-[#FAF8F5]'
+                                            }`}>
+                                              {totalSelected >= (group.minSelect || 0) && totalSelected > 0 ? (
+                                                <span className="flex items-center gap-1">
+                                                  <Check className="w-3 h-3 stroke-[3]" />
+                                                  {helperText}
+                                                </span>
+                                              ) : (
+                                                helperText
+                                              )}
+                                            </span>
+                                          </div>
+                                        )}
                                       </div>
                                     )}
                                   </div>
@@ -2703,15 +3396,15 @@ export const ClientArea: React.FC = () => {
 
                                   {/* Options list rendered as premium vertical lines */}
                                   <div 
-                                    className="divide-y divide-[#F7F4EF]/50"
+                                    className="divide-y divide-[#F7F4EF]/80"
                                     role={isSingle ? "radiogroup" : undefined}
                                     aria-label={isSingle ? group.name : undefined}
                                   >
                                     {group.options
                                       .filter(o => o.active)
                                       .map((opt) => {
-                                        const optSelections = selection?.selectedOptions.filter(so => so.optionId === opt.id) || [];
-                                        const optCount = optSelections.reduce((sum, so) => sum + (so.quantity ?? 1), 0);
+                                        const optSelection = selection?.selectedOptions.find(so => so.optionId === opt.id);
+                                        const optCount = optSelection ? (optSelection.quantity ?? 1) : 0;
                                         const isSelected = optCount > 0;
 
                                         return (
@@ -2732,103 +3425,161 @@ export const ClientArea: React.FC = () => {
                                                 handleToggleOption(group, opt);
                                               }
                                             } : undefined}
-                                            className={`py-4 flex items-center justify-between cursor-pointer transition-all duration-200 select-none gap-4 group/opt min-h-[64px] outline-none ${
+                                            className={`py-4 flex flex-col sm:flex-row sm:items-center justify-between cursor-pointer transition-all duration-200 select-none gap-3 sm:gap-4 group/opt min-h-[64px] outline-none ${
                                               isSelected && isSingle
-                                                ? 'bg-[#E94F2F]/4 border-l-4 border-l-[#E94F2F] -mx-5 px-5 sm:-mx-6 sm:px-6'
+                                                ? 'bg-[#E94F2F]/4 border-l-4 border-l-[#E94F2F] -mx-6 px-6 sm:-mx-7 sm:px-7'
                                                 : 'bg-white hover:bg-[#FAF8F5]/30'
                                             }`}
                                           >
-                                            {/* A. CONTENT */}
-                                            <div className="flex-1 min-w-0 text-left space-y-0.5">
-                                              <p className={`text-sm sm:text-base font-semibold leading-tight transition-colors ${
-                                                isSelected ? 'text-[#201A17] font-black' : 'text-[#201A17] group-hover/opt:text-[#E94F2F]'
+                                            {/* Left Column: Option Name & Description */}
+                                            <div className="flex-1 min-w-0 text-left space-y-1">
+                                              <p className={`text-sm sm:text-base font-semibold leading-tight transition-colors break-words whitespace-normal ${
+                                                isSelected ? 'text-[#201A17] font-extrabold' : 'text-[#201A17] group-hover/opt:text-[#E94F2F]'
                                               }`}>
-                                                {opt.name}
+                                                {opt.name}{isSelected && optCount > 1 ? ` × ${optCount}` : ''}
                                               </p>
                                               {opt.description && (
-                                                <p className="text-[11px] sm:text-xs text-[#756B66]/80 leading-relaxed break-words whitespace-normal font-semibold">
+                                                <p className="text-[11px] sm:text-xs text-[#756B66]/80 leading-relaxed break-words whitespace-normal font-medium">
                                                   {opt.description}
                                                 </p>
                                               )}
                                             </div>
 
-                                            {/* B. PREÇO */}
-                                            <div className="shrink-0 text-right">
-                                              {opt.additionalPrice > 0 ? (
-                                                <span className="text-xs sm:text-sm font-semibold text-[#2F9E69] bg-[#2F9E69]/5 px-2.5 py-1 rounded-full whitespace-nowrap">
-                                                  + R$ {opt.additionalPrice.toFixed(2).replace('.', ',')}
-                                                </span>
-                                              ) : opt.additionalPrice < 0 ? (
-                                                <span className="text-xs sm:text-sm font-semibold text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full whitespace-nowrap">
-                                                  - R$ {Math.abs(opt.additionalPrice).toFixed(2).replace('.', ',')}
-                                                </span>
-                                              ) : (
-                                                <span className="text-xs font-semibold text-[#756B66]/60 bg-[#FAF8F5] px-2 py-0.5 rounded whitespace-nowrap">
-                                                  Incluso
-                                                </span>
-                                              )}
-                                            </div>
-
-                                            {/* C. CONTROLE */}
-                                            <div 
-                                              className="shrink-0 flex items-center justify-end"
-                                              onClick={(e) => {
-                                                // Prevent double trigger if clicking control buttons
-                                                e.stopPropagation();
-                                              }}
-                                            >
-                                              {isSingle ? (
-                                                // Single Choice Control
-                                                isSelected ? (
-                                                  <span className="w-8 h-8 flex items-center justify-center rounded-full bg-[#E94F2F]/10 border border-[#E94F2F]/20 text-[#E94F2F] shrink-0 shadow-xs">
-                                                    <Check className="w-4 h-4 stroke-[3.5]" />
+                                            {/* Right Column: Price and Stepper/Controls */}
+                                            <div className="flex items-center gap-3 justify-between sm:justify-end shrink-0 w-full sm:w-auto">
+                                              {/* Price Pill */}
+                                              <div className="shrink-0 text-left sm:text-right">
+                                                {opt.additionalPrice > 0 ? (
+                                                  <span className="text-xs sm:text-sm font-semibold text-emerald-700 bg-emerald-50 border border-emerald-100/50 px-2.5 py-1 rounded-lg whitespace-nowrap inline-flex items-center">
+                                                    + R$ {((opt.additionalPrice * (isSelected ? optCount : 1))).toFixed(2).replace('.', ',')}
+                                                  </span>
+                                                ) : opt.additionalPrice < 0 ? (
+                                                  <span className="text-xs sm:text-sm font-semibold text-rose-700 bg-rose-50 border border-rose-100/50 px-2.5 py-1 rounded-lg whitespace-nowrap inline-flex items-center">
+                                                    - R$ {(Math.abs(opt.additionalPrice * (isSelected ? optCount : 1))).toFixed(2).replace('.', ',')}
                                                   </span>
                                                 ) : (
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => handleToggleOption(group, opt)}
-                                                    className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-[#EADFD8]/60 text-[#E94F2F] hover:bg-[#E94F2F] hover:text-white hover:border-[#E94F2F] transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
-                                                    aria-label="Selecionar"
-                                                  >
-                                                    <Plus className="w-4 h-4 stroke-[3]" />
-                                                  </button>
-                                                )
-                                              ) : (
-                                                // Multi-Choice Control
-                                                isSelected ? (
-                                                  // Stepper control for multi-quantity option selection conforming to Requirement 2
-                                                  <div className="flex items-center gap-2.5 bg-[#FAF8F5] px-2 py-1 rounded-full border border-[#EADFD8]/60 shadow-xs">
+                                                  <span className="text-xs font-semibold text-[#756B66]/60 bg-[#FAF8F5] border border-[#EADFD8]/40 px-2.5 py-1 rounded-lg whitespace-nowrap inline-flex items-center">
+                                                    Incluso
+                                                  </span>
+                                                )}
+                                              </div>
+
+                                              {/* Stepper / Toggle Control */}
+                                              <div 
+                                                className="shrink-0 flex items-center justify-end"
+                                                onClick={(e) => {
+                                                  // Prevent double trigger if clicking control buttons
+                                                  e.stopPropagation();
+                                                }}
+                                              >
+                                                {isSingle ? (
+                                                  // Single Choice Control
+                                                  isSelected ? (
+                                                    <div className="flex items-center gap-1.5">
+                                                      <span className="w-8 h-8 flex items-center justify-center rounded-full bg-[#E94F2F]/10 border border-[#E94F2F]/20 text-[#E94F2F] shrink-0 shadow-xs">
+                                                        <Check className="w-4 h-4 stroke-[3.5]" />
+                                                      </span>
+                                                      {!group.required && (
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => handleToggleOption(group, opt)}
+                                                          className="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-rose-50 text-[#756B66]/60 hover:text-rose-600 border border-neutral-200/50 hover:border-rose-200/50 transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
+                                                          aria-label="Remover"
+                                                        >
+                                                          <X className="w-4 h-4 stroke-[2.5]" />
+                                                        </button>
+                                                      )}
+                                                    </div>
+                                                  ) : (
                                                     <button
                                                       type="button"
-                                                      onClick={() => handleToggleOption(group, opt, -1)}
-                                                      className="w-6 h-6 flex items-center justify-center rounded-full bg-white border border-[#EADFD8]/40 text-[#756B66] hover:text-[#E94F2F] active:scale-90 transition-transform cursor-pointer"
-                                                      aria-label="Diminuir"
+                                                      onClick={() => handleToggleOption(group, opt)}
+                                                      className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-[#EADFD8]/60 text-[#E94F2F] hover:bg-[#E94F2F] hover:text-white hover:border-[#E94F2F] transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
+                                                      aria-label="Selecionar"
                                                     >
-                                                      <Minus className="w-3.5 h-3.5 stroke-[3]" />
+                                                      <Plus className="w-4 h-4 stroke-[3]" />
                                                     </button>
-                                                    <span className="text-xs sm:text-sm font-black text-[#201A17] min-w-[14px] text-center font-sans tabular-nums">
-                                                      {optCount}
-                                                    </span>
+                                                  )
+                                                ) : (
+                                                  // Multi-Choice Control
+                                                  isSelected ? (
+                                                    group.allowOptionQuantity ? (
+                                                      // Stepper control for multi-quantity option selection
+                                                      <div className="flex items-center gap-1.5">
+                                                        <div className="flex items-center gap-2 bg-[#FAF8F5] px-1.5 py-1 rounded-xl border border-[#EADFD8] shadow-xs">
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => handleToggleOption(group, opt, -1)}
+                                                            className="w-7 h-7 flex items-center justify-center rounded-lg bg-white border border-[#EADFD8]/60 text-[#756B66] hover:text-[#201A17] active:scale-90 transition-all cursor-pointer"
+                                                            aria-label="Diminuir"
+                                                          >
+                                                            <Minus className="w-3 h-3 stroke-[3]" />
+                                                          </button>
+                                                          <span className="text-xs sm:text-sm font-black text-[#201A17] min-w-[14px] text-center font-sans tabular-nums">
+                                                            {optCount}
+                                                          </span>
+                                                          <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                              const maxQty = group.maxQuantityPerOption ?? 5;
+                                                              if (optCount >= maxQty) {
+                                                                showToast(`Limite de ${maxQty} unidades atingido.`, 'info');
+                                                              } else {
+                                                                handleToggleOption(group, opt, 1);
+                                                              }
+                                                            }}
+                                                            disabled={optCount >= (group.maxQuantityPerOption ?? 5)}
+                                                            className={`w-7 h-7 flex items-center justify-center rounded-lg transition-all ${
+                                                              optCount >= (group.maxQuantityPerOption ?? 5)
+                                                                ? 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
+                                                                : 'bg-[#E94F2F] text-white hover:bg-[#BD351C] hover:scale-105 active:scale-95 cursor-pointer shadow-sm'
+                                                            }`}
+                                                            aria-label="Aumentar"
+                                                          >
+                                                            <Plus className="w-3 h-3 stroke-[3]" />
+                                                          </button>
+                                                        </div>
+                                                        
+                                                        {/* Discreet X button */}
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => {
+                                                            handleToggleOption(group, opt, -optCount);
+                                                          }}
+                                                          className="w-7 h-7 flex items-center justify-center rounded-lg bg-neutral-100 hover:bg-rose-50 text-[#756B66]/60 hover:text-rose-600 border border-neutral-200/50 hover:border-rose-200/50 transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
+                                                          aria-label="Remover"
+                                                        >
+                                                          <X className="w-3.5 h-3.5 stroke-[2.5]" />
+                                                        </button>
+                                                      </div>
+                                                    ) : (
+                                                      // Standard Checkmark/Button with X button for simple selections
+                                                      <div className="flex items-center gap-1.5">
+                                                        <span className="w-8 h-8 flex items-center justify-center rounded-full bg-[#E94F2F]/10 border border-[#E94F2F]/20 text-[#E94F2F] shrink-0 shadow-xs">
+                                                          <Check className="w-4 h-4 stroke-[3.5]" />
+                                                        </span>
+                                                        <button
+                                                          type="button"
+                                                          onClick={() => handleToggleOption(group, opt)}
+                                                          className="w-8 h-8 flex items-center justify-center rounded-full bg-neutral-100 hover:bg-rose-50 text-[#756B66]/60 hover:text-rose-600 border border-neutral-200/50 hover:border-rose-200/50 transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
+                                                          aria-label="Remover"
+                                                        >
+                                                          <X className="w-4 h-4 stroke-[2.5]" />
+                                                        </button>
+                                                      </div>
+                                                    )
+                                                  ) : (
                                                     <button
                                                       type="button"
                                                       onClick={() => handleToggleOption(group, opt, 1)}
-                                                      className="w-6 h-6 flex items-center justify-center rounded-full bg-[#E94F2F] text-white hover:bg-[#BD351C] active:scale-90 transition-transform cursor-pointer"
-                                                      aria-label="Aumentar"
+                                                      className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-[#EADFD8]/60 text-[#E94F2F] hover:bg-[#E94F2F] hover:text-white hover:border-[#E94F2F] transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
+                                                      aria-label="Adicionar"
                                                     >
-                                                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                                                      <Plus className="w-4 h-4 stroke-[3]" />
                                                     </button>
-                                                  </div>
-                                                ) : (
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => handleToggleOption(group, opt, 1)}
-                                                    className="w-8 h-8 flex items-center justify-center rounded-full bg-white border border-[#EADFD8]/60 text-[#E94F2F] hover:bg-[#E94F2F] hover:text-white hover:border-[#E94F2F] transition-all duration-200 shrink-0 shadow-xs cursor-pointer active:scale-90"
-                                                    aria-label="Adicionar"
-                                                  >
-                                                    <Plus className="w-4 h-4 stroke-[3]" />
-                                                  </button>
-                                                )
-                                              )}
+                                                  )
+                                                )}
+                                              </div>
                                             </div>
                                           </div>
                                         );
@@ -3003,20 +3754,65 @@ export const ClientArea: React.FC = () => {
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className="absolute top-0 right-0 h-full w-full max-w-md bg-white shadow-2xl flex flex-col"
+              onKeyDown={handleFocusTrap}
+              className="absolute top-0 right-0 h-[100dvh] w-full max-w-md bg-white shadow-2xl flex flex-col focus:outline-none"
+              tabIndex={-1}
             >
-              <div className="p-5 border-b border-[#EADFD8] flex justify-between items-center bg-[#F7F4EF]">
+              {/* Skip to checkout link for accessibility */}
+              {cart.length > 0 && (
+                <button
+                  onClick={() => {
+                    const cta = document.getElementById('cart-checkout-btn');
+                    if (cta) {
+                      cta.focus();
+                    } else {
+                      const closedBtn = document.getElementById('cart-closed-btn');
+                      if (closedBtn) closedBtn.focus();
+                    }
+                  }}
+                  className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-16 focus:left-5 focus:bg-[#E94F2F] focus:text-white focus:p-3 focus:rounded-xl focus:font-black focus:text-xs focus:shadow-md cursor-pointer"
+                >
+                  Pular para o checkout
+                </button>
+              )}
+
+              <div className="p-5 border-b border-[#EADFD8] flex justify-between items-center bg-[#F7F4EF] shrink-0">
                 <div className="flex items-center gap-2">
                   <ShoppingBag className="w-5 h-5 text-[#E94F2F]" />
                   <h3 className="font-extrabold text-lg text-[#201A17]">Seu Carrinho</h3>
                 </div>
                 <button
+                  id="close-cart-btn"
                   onClick={() => setIsCartOpen(false)}
-                  className="p-1 rounded-full hover:bg-gray-200 transition-colors text-gray-500"
+                  className="p-1 rounded-full hover:bg-[#FAF8F5] transition-colors text-gray-500 focus:outline-none focus:ring-2 focus:ring-[#E94F2F] min-w-[44px] min-h-[44px] flex items-center justify-center cursor-pointer"
+                  aria-label="Fechar carrinho"
                 >
                   <X className="w-6 h-6" />
                 </button>
               </div>
+
+              {/* Establishment identification banner conforming to Requirement 1 */}
+              {cart.length > 0 && (
+                <div className="px-5 py-3 border-b border-[#EADFD8] bg-[#FDFBF7] flex items-center gap-3 shrink-0">
+                  <img
+                    src={cartEst?.logoUrl || cartEst?.image || "/placeholder.png"}
+                    alt={cartEst?.name}
+                    referrerPolicy="no-referrer"
+                    className="w-10 h-10 rounded-full object-cover border border-[#EADFD8] shrink-0 bg-[#F7F4EF]"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-black text-[#756B66] uppercase tracking-wider">Seu pedido em</p>
+                    <h4 className="font-extrabold text-sm text-[#201A17] truncate">{cartEst?.name}</h4>
+                    <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-[#756B66] font-semibold mt-0.5">
+                      <span>{cartEst?.cityName || cartEst?.city || 'São João Batista do Glória'}</span>
+                      <span className="w-1 h-1 rounded-full bg-[#EADFD8]" />
+                      <span>{deliveryType === 'entrega' ? 'Entrega' : 'Retirada'}</span>
+                      <span className="w-1 h-1 rounded-full bg-[#EADFD8]" />
+                      <span>{cartEst?.deliveryTime || '30-45 min'}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Cart List */}
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
@@ -3027,7 +3823,7 @@ export const ClientArea: React.FC = () => {
                       {currentEst.name} está fechada e não pode receber este pedido agora.
                     </p>
                     <p className="text-[#756B66] font-medium leading-relaxed">
-                      O estabelecimento deixou de aceitar pedidos. Você pode continuar consultando o cardápio ou esvaziar seu carrinho.
+                      O estabelecimento deixou de aceitar pedidos. Você pode continuar consultando o catálogo ou esvaziar seu carrinho.
                     </p>
                   </div>
                 )}
@@ -3043,19 +3839,46 @@ export const ClientArea: React.FC = () => {
                 ) : (
                   cart.map((item, index) => {
                     const normalized = normalizeOrderItem(item);
+                    const hasPromo = normalized.promotionApplied && normalized.regularUnitPrice && normalized.regularUnitPrice > normalized.baseUnitPrice;
 
                     return (
                       <div key={index} className="border-b border-[#F7F4EF] pb-4 pt-1 space-y-3 text-xs">
-                        {/* Header Row - spans full width of the card */}
+                        {/* Header Row & Promo details */}
                         <div className="flex justify-between items-start gap-4">
-                          <h4 className="font-bold text-sm text-[#201A17] flex-1 min-w-0 break-words">{normalized.productName}</h4>
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold text-sm text-[#201A17] break-words whitespace-normal overflow-visible h-auto">
+                              {normalized.productName}
+                            </h4>
+                            {hasPromo ? (
+                              <div className="space-y-0.5 mt-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[9px] font-black text-[#E94F2F] bg-[#E94F2F]/10 px-1.5 py-0.5 rounded uppercase tracking-wider">
+                                    {normalized.promotionLabel || 'Oferta'}
+                                  </span>
+                                  <span className="text-xs text-[#756B66] line-through font-medium">
+                                    R$ {normalized.regularUnitPrice?.toFixed(2).replace('.', ',')}
+                                  </span>
+                                  <span className="text-xs font-black text-[#201A17]">
+                                    R$ {normalized.baseUnitPrice.toFixed(2).replace('.', ',')}
+                                  </span>
+                                </div>
+                                <p className="text-[10px] font-black text-[#2F9E69]">
+                                  Você economiza R$ {((normalized.regularUnitPrice! - normalized.baseUnitPrice) * normalized.quantity).toFixed(2).replace('.', ',')}
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-[#756B66] mt-1 font-semibold">
+                                R$ {normalized.baseUnitPrice.toFixed(2).replace('.', ',')}
+                              </p>
+                            )}
+                          </div>
                           <span className="text-sm font-black text-[#2F9E69] shrink-0 whitespace-nowrap">
                             R$ {normalized.lineTotal.toFixed(2).replace('.', ',')}
                           </span>
                         </div>
 
-                        {/* Config specifications conforming to Requirement 6 */}
-                        <div className="space-y-2">
+                        {/* Config specifications conforming to Requirement 4 with indentation */}
+                        <div className="pl-3 border-l border-[#EADFD8] ml-1 space-y-2">
                           {(() => {
                             const customizationLines = getCartItemCustomizationLines(normalized);
                             const groupedCustomizations = customizationLines.reduce((acc, line) => {
@@ -3085,7 +3908,7 @@ export const ClientArea: React.FC = () => {
 
                                         return (
                                           <div key={oIdx} className="flex justify-between items-center text-xs py-0.5 gap-4">
-                                            <span className="font-medium text-[#5C534E] truncate" title={displayName}>
+                                            <span className="font-medium text-[#5C534E] break-words whitespace-normal overflow-visible h-auto flex-1">
                                               {displayName}
                                             </span>
                                             {opt.additionalPrice > 0 ? (
@@ -3160,25 +3983,25 @@ export const ClientArea: React.FC = () => {
 
               {/* Bottom Summary & Actions */}
               {cart.length > 0 && (
-                <div className="p-5 border-t border-[#EADFD8] bg-[#F7F4EF] space-y-4">
-                  {/* Coupon section */}
+                <div className="p-5 border-t border-[#EADFD8] bg-[#F7F4EF] space-y-4 shrink-0 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))] md:pb-5">
+                  {/* Coupon section conforming to Requirement 7 */}
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      placeholder="Cupom (PEDENOVO)"
+                      placeholder="Código do cupom"
                       value={couponCode}
                       onChange={(e) => setCouponCode(e.target.value)}
                       className="flex-1 px-3 py-1.5 text-xs text-[#201A17] border border-[#EADFD8] rounded-lg outline-none bg-white placeholder:text-gray-400 font-bold uppercase"
                     />
                     <button
                       onClick={handleApplyCoupon}
-                      className="bg-[#201A17] hover:bg-[#E94F2F] text-white px-3 py-1.5 rounded-lg text-xs font-extrabold transition-colors"
+                      className="bg-[#201A17] hover:bg-[#E94F2F] text-white px-3 py-1.5 rounded-lg text-xs font-extrabold transition-colors cursor-pointer"
                     >
                       Aplicar
                     </button>
                   </div>
 
-                  {/* Calculations */}
+                  {/* Calculations conforming to Requirement 6 */}
                   <div className="space-y-1.5 text-xs text-[#756B66] font-semibold">
                     <div className="flex justify-between">
                       <span>Subtotal</span>
@@ -3186,39 +4009,26 @@ export const ClientArea: React.FC = () => {
                     </div>
                     {couponDiscount > 0 && (
                       <div className="flex justify-between text-rose-600">
-                        <span>Desconto</span>
+                        <span>Descontos</span>
                         <span>- R$ {couponDiscount.toFixed(2).replace('.', ',')}</span>
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span>Taxa de Entrega estimada</span>
-                      <span className="text-[#201A17]">R$ {deliveryFee.toFixed(2).replace('.', ',')}</span>
+                      <span>Taxa de Entrega</span>
+                      <span className="text-[#201A17] italic">
+                        {deliveryType === 'retirada' ? 'Grátis' : 'Calculada no checkout'}
+                      </span>
                     </div>
                     <div className="flex justify-between text-sm text-[#201A17] font-black pt-1.5 border-t border-[#EADFD8]">
-                      <span>Valor Total</span>
-                      <span className="text-[#2F9E69]">R$ {cartTotal.toFixed(2).replace('.', ',')}</span>
+                      <span>{deliveryType === 'retirada' ? 'Valor Total' : 'Total (sem taxa de entrega)'}</span>
+                      <span className="text-[#2F9E69]">
+                        R$ {(cartSubtotal - couponDiscount).toFixed(2).replace('.', ',')}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Place Order Trigger */}
-                  {canEstablishmentReceiveOrders(currentEst) ? (
-                    <button
-                      onClick={() => {
-                        if (!canEstablishmentReceiveOrders(currentEst)) {
-                          showToast(`O estabelecimento deixou de aceitar pedidos.`, 'error');
-                          return;
-                        }
-                        if (cartSubtotal < currentEst.minOrderValue) {
-                          showToast(`O valor mínimo para entrega é R$ ${currentEst.minOrderValue.toFixed(2)}`, 'error');
-                          return;
-                        }
-                        setIsCheckoutOpen(true);
-                      }}
-                      className="w-full bg-[#E94F2F] hover:bg-[#BD351C] text-white py-3 rounded-xl font-bold text-sm shadow-md transition-transform active:scale-95 text-center block"
-                    >
-                      Ir para o Checkout
-                    </button>
-                  ) : (
+                  {/* Place Order Trigger conforming to Requirement 8 */}
+                  {!canEstablishmentReceiveOrders(cartEst || currentEst) ? (
                     <div className="space-y-2">
                       <button
                         disabled
@@ -3229,7 +4039,7 @@ export const ClientArea: React.FC = () => {
                       <div className="grid grid-cols-2 gap-2">
                         <button
                           onClick={() => setIsCartOpen(false)}
-                          className="bg-white border border-[#EADFD8] text-[#201A17] py-2 rounded-xl text-xs font-bold hover:bg-[#F7F4EF] text-center"
+                          className="bg-white border border-[#EADFD8] text-[#201A17] py-2 rounded-xl text-xs font-bold hover:bg-[#F7F4EF] text-center cursor-pointer"
                         >
                           Continuar consultando
                         </button>
@@ -3238,12 +4048,52 @@ export const ClientArea: React.FC = () => {
                             clearCart();
                             showToast("Carrinho esvaziado.", "success");
                           }}
-                          className="bg-rose-50 border border-rose-200 text-rose-600 py-2 rounded-xl text-xs font-bold hover:bg-rose-100 text-center"
+                          className="bg-rose-50 border border-rose-200 text-rose-600 py-2 rounded-xl text-xs font-bold hover:bg-rose-100 text-center cursor-pointer"
                         >
                           Esvaziar carrinho
                         </button>
                       </div>
                     </div>
+                  ) : cartSubtotal < (cartEst || currentEst).minOrderValue ? (
+                    <div className="space-y-2">
+                      <button
+                        disabled
+                        className="w-full bg-[#FDFBF7] text-gray-400 border border-gray-200 py-3 rounded-xl font-extrabold text-xs text-center cursor-not-allowed block"
+                      >
+                        Abaixo do Valor Mínimo (Mín: R$ {(cartEst || currentEst).minOrderValue.toFixed(2).replace('.', ',')})
+                      </button>
+                      <p className="text-[10px] text-[#E94F2F] text-center font-bold">
+                        Adicione mais R$ {((cartEst || currentEst).minOrderValue - cartSubtotal).toFixed(2).replace('.', ',')} para prosseguir.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <button
+                          onClick={() => setIsCartOpen(false)}
+                          className="bg-white border border-[#EADFD8] text-[#201A17] py-2 rounded-xl text-xs font-bold hover:bg-[#F7F4EF] text-center cursor-pointer"
+                        >
+                          Continuar consultando
+                        </button>
+                        <button
+                          onClick={() => {
+                            clearCart();
+                            showToast("Carrinho esvaziado.", "success");
+                          }}
+                          className="bg-rose-50 border border-rose-200 text-rose-600 py-2 rounded-xl text-xs font-bold hover:bg-rose-100 text-center cursor-pointer"
+                        >
+                          Esvaziar carrinho
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      id="cart-checkout-btn"
+                      onClick={() => {
+                        setIsCheckoutOpen(true);
+                        setIsCartOpen(false);
+                      }}
+                      className="w-full bg-[#E94F2F] hover:bg-[#BD351C] text-white py-3 rounded-xl font-bold text-sm shadow-md transition-transform active:scale-95 text-center block min-h-[48px] focus:outline-none focus:ring-2 focus:ring-[#E94F2F] cursor-pointer"
+                    >
+                      Continuar para o checkout
+                    </button>
                   )}
                 </div>
               )}
@@ -3264,100 +4114,116 @@ export const ClientArea: React.FC = () => {
             >
               <div className="p-5 border-b border-[#EADFD8] flex justify-between items-center bg-[#F7F4EF]">
                 <h3 className="font-extrabold text-lg text-[#201A17]">Finalizar seu Pedido</h3>
-                <button onClick={() => setIsCheckoutOpen(false)} className="text-gray-500">
+                <button onClick={() => setIsCheckoutOpen(false)} className="text-gray-500 hover:text-gray-700 transition-colors">
                   <X className="w-6 h-6" />
                 </button>
               </div>
 
-              <form onSubmit={handlePlaceOrderSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
+              <form onSubmit={handlePlaceOrderSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
                 
-                {/* Delivery Type Switch */}
-                {(!currentEst || (currentEst.entregaPropria === false && currentEst.atendeRetirada === false)) ? (
-                  <div className="bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-xl flex items-start gap-2 text-xs font-semibold">
-                    <AlertCircle className="w-4.5 h-4.5 text-rose-600 shrink-0 mt-0.5" id="no-modalities-alert" />
-                    <span>Este estabelecimento não possui uma modalidade de atendimento disponível no momento.</span>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <label className="text-xs font-black text-[#756B66] uppercase tracking-wider block">Modalidade</label>
-                    {currentEst.entregaPropria !== false && currentEst.atendeRetirada !== false ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setDeliveryType('entrega')}
-                          className={`p-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            deliveryType === 'entrega'
-                              ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
-                              : 'bg-[#F7F4EF] text-[#756B66] border-[#EADFD8]'
-                          }`}
-                        >
-                          <Bike className="w-3.5 h-3.5 inline mr-1.5" /> Entrega em casa
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDeliveryType('retirada')}
-                          className={`p-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
-                            deliveryType === 'retirada'
-                              ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
-                              : 'bg-[#F7F4EF] text-[#756B66] border-[#EADFD8]'
-                          }`}
-                        >
-                          <ShoppingBag className="w-3.5 h-3.5 inline mr-1.5" /> Retirada no balcão
-                        </button>
-                      </div>
-                    ) : currentEst.entregaPropria !== false ? (
-                      <div className="w-full">
-                        <button
-                          type="button"
-                          disabled
-                          className="w-full p-2.5 rounded-xl text-xs font-bold border bg-[#E94F2F] text-white border-[#E94F2F] text-center"
-                        >
-                          <Bike className="w-3.5 h-3.5 inline mr-1.5" /> Entrega em casa
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="w-full">
-                        <button
-                          type="button"
-                          disabled
-                          className="w-full p-2.5 rounded-xl text-xs font-bold border bg-[#E94F2F] text-white border-[#E94F2F] text-center"
-                        >
-                          <ShoppingBag className="w-3.5 h-3.5 inline mr-1.5" /> Retirada no balcão
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Cliente Info */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-[#756B66] uppercase tracking-wider block">Nome do Cliente *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ex: Amanda Silva"
-                      value={customerName}
-                      onChange={(e) => setCustomerName(e.target.value)}
-                      className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-[#756B66] uppercase tracking-wider block">Telefone para contato *</label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Ex: (19) 99876-5432"
-                      value={customerPhone}
-                      onChange={(e) => setCustomerPhone(e.target.value)}
-                      className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50"
-                    />
+                {/* BLOCO 1 — ESTABELECIMENTO */}
+                <div className="bg-[#FDFBF7] p-4 rounded-2xl border border-[#EADFD8] flex items-center gap-4">
+                  <img
+                    src={cartEst?.logoUrl || cartEst?.image || "/placeholder.png"}
+                    alt={cartEst?.name}
+                    referrerPolicy="no-referrer"
+                    className="w-12 h-12 rounded-full object-cover border border-[#EADFD8] shrink-0 bg-[#F7F4EF]"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[9px] font-black text-[#756B66] uppercase tracking-wider block">Seu pedido em</span>
+                    <h4 className="text-sm font-extrabold text-[#201A17] truncate">{cartEst?.name}</h4>
+                    <p className="text-[11px] text-[#756B66] font-semibold truncate">
+                      {cartEst?.cityName || cartEst?.city || 'São João Batista do Glória'} • {deliveryType === 'entrega' ? 'Entrega em casa' : 'Retirada no balcão'}
+                    </p>
+                    <p className="text-[10px] text-emerald-700 font-bold mt-0.5">
+                      Estimativa: {deliveryType === 'entrega' ? `${quoteEstimatedMinutes} min` : `${cartEst?.pickupEstimatedMinutes || 15} min`}
+                    </p>
                   </div>
                 </div>
 
-                {/* Address Form (only if delivery) */}
+                {/* BLOCO 2 — DADOS DO CLIENTE */}
+                <div className="bg-white p-4 rounded-2xl border border-[#EADFD8] space-y-3">
+                  <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider">Dados do Cliente</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-[#756B66] uppercase">Nome do Cliente *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: Amanda Silva"
+                        value={customerName}
+                        onChange={(e) => setCustomerName(e.target.value)}
+                        className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none bg-[#FDFBF7] focus:border-[#E94F2F]/50 font-bold"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-[#756B66] uppercase">Telefone para contato *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: (19) 99876-5432"
+                        value={customerPhone}
+                        onChange={(e) => setCustomerPhone(e.target.value)}
+                        className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none bg-[#FDFBF7] focus:border-[#E94F2F]/50 font-bold"
+                      />
+                    </div>
+                  </div>
+                  {currentUser?.email && (
+                    <div className="space-y-1 pt-1">
+                      <label className="text-[10px] font-bold text-[#756B66] uppercase block">E-mail</label>
+                      <input
+                        type="email"
+                        disabled
+                        value={currentUser.email}
+                        className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] bg-gray-50 text-gray-500 font-semibold cursor-not-allowed outline-none"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* BLOCO 3 — FORMA DE RECEBIMENTO */}
+                <div className="bg-white p-4 rounded-2xl border border-[#EADFD8] space-y-3">
+                  <label className="text-xs font-black text-[#756B66] uppercase tracking-wider block">Forma de Recebimento</label>
+                  {(!cartEst || (cartEst.entregaPropria === false && cartEst.atendeRetirada === false)) ? (
+                    <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3.5 rounded-xl flex items-start gap-2 text-xs font-semibold">
+                      <AlertCircle className="w-4.5 h-4.5 text-rose-600 shrink-0 mt-0.5" />
+                      <span>Este estabelecimento não possui uma modalidade de atendimento disponível no momento.</span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      {cartEst.entregaPropria !== false && (
+                        <button
+                          type="button"
+                          onClick={() => setDeliveryType('entrega')}
+                          className={`p-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                            deliveryType === 'entrega'
+                              ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
+                              : 'bg-[#FDFBF7] text-[#756B66] border-[#EADFD8] hover:bg-[#F7F4EF]'
+                          }`}
+                        >
+                          <Bike className="w-4 h-4" /> Entrega em casa
+                        </button>
+                      )}
+                      {cartEst.atendeRetirada !== false && (
+                        <button
+                          type="button"
+                          onClick={() => setDeliveryType('retirada')}
+                          className={`p-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                            deliveryType === 'retirada'
+                              ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
+                              : 'bg-[#FDFBF7] text-[#756B66] border-[#EADFD8] hover:bg-[#F7F4EF]'
+                          }`}
+                        >
+                          <ShoppingBag className="w-4 h-4" /> Retirada no balcão
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* BLOCO 4 — ENDEREÇO */}
                 {deliveryType === 'entrega' && (
-                  <div className="space-y-4 bg-[#F7F4EF]/50 p-4 rounded-2xl border border-[#EADFD8]">
+                  <div className="space-y-4 bg-[#FDFBF7] p-4 rounded-2xl border border-[#EADFD8]">
                     <div className="flex items-center justify-between">
                       <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider">Endereço de Entrega</h4>
                       {currentUser && (
@@ -3389,19 +4255,31 @@ export const ClientArea: React.FC = () => {
                         </div>
 
                         {/* Visual summary card */}
-                        <div className="bg-white p-3.5 rounded-xl border border-[#EADFD8] text-xs space-y-1">
+                        <div className="bg-white p-3.5 rounded-xl border border-[#EADFD8] text-xs space-y-2">
                           <p className="font-extrabold text-[#201A17]">
                             {street}, {number} {complement && ` - ${complement}`}
                           </p>
                           <p className="text-[11px] text-[#756B66] font-semibold">
                             Bairro: {bairro} • Cidade Atendida
                           </p>
+                          
+                          {/* Reference input for saved address */}
+                          <div className="space-y-1 pt-1 border-t border-[#F7F4EF] mt-1">
+                            <label className="text-[9px] font-black text-[#756B66] uppercase">Ponto de Referência</label>
+                            <input
+                              type="text"
+                              placeholder="Próximo a qual comércio, cor do portão, etc."
+                              value={reference}
+                              onChange={(e) => setReference(e.target.value)}
+                              className="w-full text-[11px] p-2 rounded-lg border border-[#EADFD8] bg-[#FDFBF7] font-semibold outline-none focus:border-[#E94F2F]/40"
+                            />
+                          </div>
                         </div>
                       </div>
                     ) : (
-                      <div className="space-y-4">
+                      <div className="space-y-3">
                         <div className="grid grid-cols-3 gap-2">
-                          <div className="col-span-2 space-y-1.5">
+                          <div className="col-span-2 space-y-1">
                             <label className="text-[10px] font-black text-[#756B66] uppercase">Rua *</label>
                             <input
                               type="text"
@@ -3412,7 +4290,7 @@ export const ClientArea: React.FC = () => {
                               className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none bg-white focus:border-[#E94F2F]/50 font-bold"
                             />
                           </div>
-                          <div className="space-y-1.5">
+                          <div className="space-y-1">
                             <label className="text-[10px] font-black text-[#756B66] uppercase">Número *</label>
                             <input
                               type="text"
@@ -3426,7 +4304,7 @@ export const ClientArea: React.FC = () => {
                         </div>
 
                         <div className="grid grid-cols-2 gap-2">
-                          <div className="space-y-1.5 relative">
+                          <div className="space-y-1 relative">
                             <label className="text-[10px] font-black text-[#756B66] uppercase">Bairro *</label>
                             <input
                               type="text"
@@ -3462,7 +4340,7 @@ export const ClientArea: React.FC = () => {
                             )}
                           </div>
 
-                          <div className="space-y-1.5">
+                          <div className="space-y-1">
                             <label className="text-[10px] font-black text-[#756B66] uppercase">Complemento</label>
                             <input
                               type="text"
@@ -3473,274 +4351,391 @@ export const ClientArea: React.FC = () => {
                             />
                           </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                )}
 
-                {/* Título do Checkout & Informações de Pagamento */}
-                <div className="space-y-2 bg-[#F7F4EF]/50 p-4 rounded-2xl border border-[#EADFD8]">
-                  <h4 className="text-sm font-extrabold text-[#201A17]">Como você deseja pagar ao estabelecimento?</h4>
-                  <p className="text-xs text-[#756B66] leading-relaxed">
-                    O pagamento será realizado diretamente ao estabelecimento na entrega ou retirada. A UaiPertim não recebe nem processa o valor do pedido.
-                  </p>
-                </div>
-
-                {/* Forma de Pagamento */}
-                <div className="space-y-3">
-                  <label className="text-xs font-black text-[#756B66] uppercase tracking-wider block">Método de pagamento</label>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {paymentOptions.map((pm) => (
-                      <button
-                        key={pm.id}
-                        type="button"
-                        onClick={() => setPaymentMethod(pm.id as any)}
-                        className={`p-3 rounded-xl text-xs font-bold border transition-all flex flex-col items-center justify-center gap-1 text-center ${
-                          paymentMethod === pm.id
-                            ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
-                            : 'bg-[#F7F4EF] text-[#756B66] border-[#EADFD8] hover:bg-gray-100'
-                        }`}
-                      >
-                        <span className="font-extrabold">{pm.id === 'cash' ? 'Dinheiro' : pm.id === 'card_on_delivery' ? 'Cartão' : 'Pix'}</span>
-                        <span className={`text-[10px] ${paymentMethod === pm.id ? 'text-white/80' : 'text-[#756B66]/80'}`}>
-                          {pm.id === 'cash' ? 'No ato' : pm.id === 'card_on_delivery' ? 'Na maquininha' : 'Direto ao lojista'}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Conditional Payment Information */}
-                {paymentMethod === 'cash' && (
-                  <div className="p-4 bg-amber-50/50 rounded-2xl border border-amber-200/50 space-y-3">
-                    <label className="text-xs font-black text-amber-900 uppercase tracking-wider block">Você precisa de troco?</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setChangeRequired(false)}
-                        className={`p-2.5 rounded-xl text-xs font-bold border transition-all ${
-                          !changeRequired
-                            ? 'bg-amber-600 text-white border-amber-600'
-                            : 'bg-white text-[#756B66] border-amber-200 hover:bg-amber-50/30'
-                        }`}
-                      >
-                        Não preciso de troco
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setChangeRequired(true)}
-                        className={`p-2.5 rounded-xl text-xs font-bold border transition-all ${
-                          changeRequired
-                            ? 'bg-amber-600 text-white border-amber-600'
-                            : 'bg-white text-[#756B66] border-amber-200 hover:bg-amber-50/30'
-                        }`}
-                      >
-                        Sim, preciso de troco
-                      </button>
-                    </div>
-
-                    {changeRequired && (
-                      <div className="space-y-1.5 pt-1.5 animate-fade-in">
-                        <label className="text-[10px] font-black text-amber-900 uppercase">Troco para quanto? *</label>
-                        <div className="relative">
-                          <span className="absolute left-3 top-2.5 text-xs font-bold text-amber-700">R$</span>
+                        {/* Ponto de Referência Input */}
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-black text-[#756B66] uppercase">Ponto de Referência</label>
                           <input
                             type="text"
-                            required
-                            placeholder="Ex: 50,00"
-                            value={changeFor}
-                            onChange={(e) => setChangeFor(e.target.value)}
-                            className="w-full text-xs pl-8 pr-3 py-2.5 rounded-xl border border-amber-200 outline-none bg-white focus:border-amber-500"
+                            placeholder="Próximo a qual comércio, cor do portão, etc."
+                            value={reference}
+                            onChange={(e) => setReference(e.target.value)}
+                            className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none bg-white focus:border-[#E94F2F]/50 font-bold"
                           />
                         </div>
-                        <p className="text-[10px] text-amber-800">
-                          Informe um valor maior ou igual a R$ {cartTotal.toFixed(2).replace('.', ',')}
-                        </p>
                       </div>
                     )}
-                  </div>
-                )}
 
-                {paymentMethod === 'card_on_delivery' && (
-                  <div className="p-4 bg-blue-50/50 rounded-2xl border border-blue-200/50 space-y-2 text-xs text-blue-900">
-                    <p className="font-bold">O pagamento será feito diretamente na maquininha do estabelecimento.</p>
-                    <div className="pt-1 flex flex-wrap gap-2 text-[10px] text-blue-800 font-medium">
-                      {currentEst?.acceptDebitCard !== false && (
-                        <span className="bg-blue-100/60 px-2.5 py-1 rounded-md border border-blue-200">✓ Aceita Cartão de Débito</span>
+                    {/* Quotation Details / Validation Alerts */}
+                    <div className="space-y-2 pt-2 border-t border-[#EADFD8]">
+                      {(!bairro || bairro.trim().length < 2) && (
+                        <div className="bg-[#FAF8F5] p-3 rounded-xl border border-[#EADFD8] text-center">
+                          <span className="text-xs font-bold text-[#756B66]">Informe o bairro para calcular a entrega.</span>
+                        </div>
                       )}
-                      {currentEst?.acceptCreditCard !== false && (
-                        <span className="bg-blue-100/60 px-2.5 py-1 rounded-md border border-blue-200">✓ Aceita Cartão de Crédito</span>
+
+                      {bairro && bairro.trim().length >= 2 && quoteLoading && (
+                        <div className="bg-[#FAF8F5] p-3 rounded-xl border border-[#EADFD8] animate-pulse text-center">
+                          <span className="text-xs font-bold text-[#756B66]">Calculando taxa de entrega...</span>
+                        </div>
                       )}
-                      {currentEst?.acceptContactless !== false && (
-                        <span className="bg-blue-100/60 px-2.5 py-1 rounded-md border border-blue-200">✓ Aceita Aproximação</span>
+
+                      {bairro && bairro.trim().length >= 2 && !quoteLoading && quoteError && (
+                        <div className="bg-rose-50 border border-rose-200 p-3.5 rounded-xl text-rose-800 space-y-1 text-xs">
+                          <p className="font-bold flex items-center gap-1.5 text-rose-900">
+                            <AlertCircle className="w-4.5 h-4.5 text-rose-600" />
+                            Entrega indisponível para este endereço
+                          </p>
+                          <p className="font-medium text-[11px] leading-relaxed">{quoteError}</p>
+                        </div>
                       )}
-                    </div>
-                  </div>
-                )}
 
-                {paymentMethod === 'pix_on_delivery' && (
-                  <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/50 text-xs text-emerald-950 space-y-1">
-                    <p className="font-bold">O pagamento será realizado diretamente ao estabelecimento no momento do recebimento.</p>
-                    <p className="text-[10px] text-emerald-800 font-medium leading-relaxed">
-                      O estabelecimento irá fornecer as instruções de pagamento (como chave Pix ou código) ao realizar a entrega ou no momento da retirada. Não há QR code automático ou intermediação financeira pela plataforma.
-                    </p>
-                  </div>
-                )}
+                      {bairro && bairro.trim().length >= 2 && !quoteLoading && !quoteError && quoteAvailable && (
+                        <div className="bg-[#F4F9F6] border border-[#D5EADB] p-3 rounded-xl text-[#2F9E69] space-y-2 text-xs">
+                          <div className="p-2.5 bg-white rounded-lg border border-[#D5EADB]/50 font-extrabold text-xs text-[#201A17] flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-[#2F9E69]"></span>
+                            <span>Taxa de entrega para {quoteNeighborhood || bairro}: {deliveryFee === 0 ? 'Grátis' : `R$ ${deliveryFee.toFixed(2).replace('.', ',')}`}</span>
+                          </div>
 
-                {/* Caixa de Confirmação Obrigatória */}
-                <div className="p-3.5 bg-red-50/40 border border-red-200/50 rounded-xl">
-                  <label className="flex items-start gap-2.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={confirmPaymentToEst}
-                      onChange={(e) => setConfirmPaymentToEst(e.target.checked)}
-                      className="mt-0.5 rounded text-[#E94F2F] focus:ring-[#E94F2F]"
-                    />
-                    <span className="text-[11px] font-bold text-red-900 select-none leading-tight">
-                      Confirmo que o pagamento será realizado diretamente ao estabelecimento no momento da entrega ou retirada.
-                    </span>
-                  </label>
-                </div>
-
-                {/* Observações de Envio */}
-                <div className="space-y-2">
-                  <label className="text-xs font-black text-[#756B66] uppercase tracking-wider block">Mensagem ou observação para o motoboy</label>
-                  <textarea
-                    placeholder="Ex: Interfone com defeito, deixar na portaria, etc."
-                    value={checkoutNotes}
-                    onChange={(e) => setCheckoutNotes(e.target.value)}
-                    rows={2}
-                    className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 resize-none placeholder:text-[#756B66]"
-                  />
-                </div>
-
-                {/* Quotation Info & Validation Alerts */}
-                {deliveryType === 'entrega' && (
-                  <div className="space-y-2">
-                    {/* 1. Typing/No neighborhood yet */}
-                    {(!bairro || bairro.trim().length < 2) && (
-                      <div className="bg-[#F7F4EF] p-3.5 rounded-xl border border-[#EADFD8] flex items-center justify-center">
-                        <span className="text-xs font-bold text-[#756B66]">Informe o bairro para calcular a entrega.</span>
-                      </div>
-                    )}
-
-                    {/* 2. Loading state */}
-                    {bairro && bairro.trim().length >= 2 && quoteLoading && (
-                      <div className="bg-[#F7F4EF] p-3.5 rounded-xl border border-[#EADFD8] animate-pulse flex items-center justify-center">
-                        <span className="text-xs font-bold text-[#756B66]">Calculando taxa de entrega...</span>
-                      </div>
-                    )}
-                    
-                    {/* 3. Error state */}
-                    {bairro && bairro.trim().length >= 2 && !quoteLoading && quoteError && (
-                      <div className="bg-rose-50 border border-rose-200 p-3.5 rounded-xl text-rose-800 space-y-1 text-xs">
-                        <p className="font-bold flex items-center gap-1.5 text-rose-900">
-                          <svg className="w-4 h-4 text-rose-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                          </svg>
-                          Não é possível entregar
-                        </p>
-                        <p className="font-medium text-[11px] leading-relaxed">{quoteError}</p>
-                      </div>
-                    )}
-
-                    {/* 4. Valid Quote state */}
-                    {bairro && bairro.trim().length >= 2 && !quoteLoading && !quoteError && quoteAvailable && (
-                      <div className="bg-[#F4F9F6] border border-[#D5EADB] p-3.5 rounded-xl text-[#2F9E69] space-y-1 text-xs">
-                        {/* Custom visual delivery fee description */}
-                        <div className="p-2.5 bg-white/80 rounded-lg border border-[#D5EADB]/50 font-extrabold text-xs text-[#201A17] mb-2 flex items-center gap-2">
-                          <span className="w-2 h-2 rounded-full bg-[#2F9E69]"></span>
-                          {quotePricingSource === "neighborhood_override" ? (
-                            <span>Taxa de entrega para {quoteNeighborhood || bairro}: R$ {deliveryFee.toFixed(2).replace('.', ',')}</span>
-                          ) : (
-                            <span>Taxa de entrega: R$ {deliveryFee.toFixed(2).replace('.', ',')}</span>
+                          <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
+                            <div className="bg-white p-2 rounded-lg border border-[#D5EADB]/50">
+                              <span className="text-[#756B66] block uppercase text-[8px] font-black tracking-wider mb-0.5">Prazo Estimado</span>
+                              <span className="text-[#201A17] font-black text-xs">{quoteEstimatedMinutes} min</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-[#D5EADB]/50">
+                              <span className="text-[#756B66] block uppercase text-[8px] font-black tracking-wider mb-0.5">Pedido Mínimo</span>
+                              <span className="text-[#201A17] font-black text-xs">R$ {quoteMinOrderValue.toFixed(2).replace('.', ',')}</span>
+                            </div>
+                          </div>
+                          {cartSubtotal < quoteMinOrderValue && (
+                            <p className="text-rose-600 font-bold text-[10px] pt-1 block leading-tight">
+                              * Seu subtotal é R$ {cartSubtotal.toFixed(2).replace('.', ',')}. Faltam R$ {(quoteMinOrderValue - cartSubtotal).toFixed(2).replace('.', ',')} para atingir o pedido mínimo deste local.
+                            </p>
                           )}
                         </div>
-
-                        <div className="grid grid-cols-2 gap-2 text-[11px] font-bold">
-                          <div className="bg-white/80 p-2 rounded-lg border border-[#D5EADB]/50">
-                            <span className="text-[#756B66] block uppercase text-[8px] font-black tracking-wider mb-0.5">Prazo Estimado</span>
-                            <span className="text-[#201A17] font-black text-xs">{quoteEstimatedMinutes} min</span>
-                          </div>
-                          <div className="bg-white/80 p-2 rounded-lg border border-[#D5EADB]/50">
-                            <span className="text-[#756B66] block uppercase text-[8px] font-black tracking-wider mb-0.5">Pedido Mínimo</span>
-                            <span className="text-[#201A17] font-black text-xs">R$ {quoteMinOrderValue.toFixed(2).replace('.', ',')}</span>
-                          </div>
-                        </div>
-                        {cartSubtotal < quoteMinOrderValue && (
-                          <p className="text-rose-600 font-bold text-[10px] pt-1 block">
-                            * Seu subtotal é R$ {cartSubtotal.toFixed(2).replace('.', ',')}. Faltam R$ {(quoteMinOrderValue - cartSubtotal).toFixed(2).replace('.', ',')} para atingir o pedido mínimo.
-                          </p>
-                        )}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {/* Final Cost Breakdown */}
-                <div className="bg-[#F7F4EF] p-4 rounded-2xl border border-[#EADFD8] space-y-1">
-                  <div className="flex justify-between text-xs text-[#756B66] font-bold">
-                    <span>Produtos</span>
-                    <span>R$ {cartSubtotal.toFixed(2).replace('.', ',')}</span>
+                {/* BLOCO 5 — PAGAMENTO */}
+                <div className="bg-white p-4 rounded-2xl border border-[#EADFD8] space-y-4">
+                  <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider">Forma de Pagamento (No recebimento)</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {cartEst?.acceptCash !== false && (
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('cash')}
+                        className={`p-3 rounded-xl text-xs font-bold border transition-all flex flex-col items-center justify-center gap-1 text-center cursor-pointer ${
+                          paymentMethod === 'cash'
+                            ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
+                            : 'bg-[#FDFBF7] text-[#756B66] border-[#EADFD8] hover:bg-[#F7F4EF]'
+                        }`}
+                      >
+                        <span className="font-extrabold">Dinheiro</span>
+                        <span className={`text-[10px] ${paymentMethod === 'cash' ? 'text-white/80' : 'text-[#756B66]/80'}`}>No ato</span>
+                      </button>
+                    )}
+
+                    {(cartEst?.acceptDebitCard !== false || cartEst?.acceptCreditCard !== false) && (
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('card_on_delivery')}
+                        className={`p-3 rounded-xl text-xs font-bold border transition-all flex flex-col items-center justify-center gap-1 text-center cursor-pointer ${
+                          paymentMethod === 'card_on_delivery'
+                            ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
+                            : 'bg-[#FDFBF7] text-[#756B66] border-[#EADFD8] hover:bg-[#F7F4EF]'
+                        }`}
+                      >
+                        <span className="font-extrabold">Cartão</span>
+                        <span className={`text-[10px] ${paymentMethod === 'card_on_delivery' ? 'text-white/80' : 'text-[#756B66]/80'}`}>Na maquininha</span>
+                      </button>
+                    )}
+
+                    {cartEst?.acceptPix !== false && (
+                      <button
+                        type="button"
+                        onClick={() => setPaymentMethod('pix_on_delivery')}
+                        className={`p-3 rounded-xl text-xs font-bold border transition-all flex flex-col items-center justify-center gap-1 text-center cursor-pointer ${
+                          paymentMethod === 'pix_on_delivery'
+                            ? 'bg-[#E94F2F] text-white border-[#E94F2F]'
+                            : 'bg-[#FDFBF7] text-[#756B66] border-[#EADFD8] hover:bg-[#F7F4EF]'
+                        }`}
+                      >
+                        <span className="font-extrabold">Pix</span>
+                        <span className={`text-[10px] ${paymentMethod === 'pix_on_delivery' ? 'text-white/80' : 'text-[#756B66]/80'}`}>Direto ao lojista</span>
+                      </button>
+                    )}
                   </div>
-                  {couponDiscount > 0 && (
-                    <div className="flex justify-between text-xs text-rose-600 font-bold">
-                      <span>Desconto</span>
-                      <span>- R$ {couponDiscount.toFixed(2).replace('.', ',')}</span>
+
+                  {paymentMethod === 'cash' && (
+                    <div className="p-3.5 bg-amber-50/60 rounded-xl border border-amber-200/50 space-y-2.5 animate-fade-in">
+                      <label className="text-[11px] font-black text-amber-950 uppercase tracking-wider block">Você precisa de troco?</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setChangeRequired(false)}
+                          className={`p-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            !changeRequired
+                              ? 'bg-amber-600 text-white border-amber-600'
+                              : 'bg-white text-[#756B66] border-amber-200 hover:bg-amber-50/30'
+                          }`}
+                        >
+                          Não preciso de troco
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setChangeRequired(true)}
+                          className={`p-2 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                            changeRequired
+                              ? 'bg-amber-600 text-white border-amber-600'
+                              : 'bg-white text-[#756B66] border-amber-200 hover:bg-amber-50/30'
+                          }`}
+                        >
+                          Sim, preciso de troco
+                        </button>
+                      </div>
+
+                      {changeRequired && (
+                        <div className="space-y-1 pt-1">
+                          <label className="text-[10px] font-black text-amber-950 uppercase">Troco para quanto? *</label>
+                          <div className="relative">
+                            <span className="absolute left-3 top-2.5 text-xs font-bold text-amber-700">R$</span>
+                            <input
+                              type="text"
+                              required
+                              placeholder="Ex: 50,00"
+                              value={changeFor}
+                              onChange={(e) => setChangeFor(e.target.value)}
+                              className="w-full text-xs pl-8 pr-3 py-2.5 rounded-xl border border-amber-200 outline-none bg-white focus:border-amber-500 font-bold"
+                            />
+                          </div>
+                          <p className="text-[10px] text-amber-800">
+                            Informe um valor maior ou igual a R$ {cartTotal.toFixed(2).replace('.', ',')}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   )}
-                  <div className="flex justify-between text-xs text-[#756B66] font-bold">
-                    <span>Taxa de Entrega ({deliveryType === 'entrega' ? (bairro || 'Endereço') : 'Retirada'})</span>
-                    <span>
-                      {deliveryType === 'retirada' 
-                        ? 'Grátis' 
-                        : (quoteLoading 
-                          ? 'Calculando...' 
-                          : (quoteError || !quoteAvailable 
-                            ? 'Indisponível' 
-                            : `R$ ${deliveryFee.toFixed(2).replace('.', ',')}`
-                          )
-                        )
-                      }
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm text-[#201A17] font-black pt-2 border-t border-[#EADFD8] mt-2">
-                    <span>Total a Pagar</span>
-                    <span className="text-[#2F9E69] text-base">
-                      {deliveryType === 'entrega' && (quoteLoading || quoteError || !quoteAvailable)
-                        ? 'Indisponível'
-                        : `R$ ${cartTotal.toFixed(2).replace('.', ',')}`
-                      }
-                    </span>
+
+                  {paymentMethod === 'card_on_delivery' && (
+                    <div className="p-3 bg-blue-50/50 rounded-xl border border-blue-100 text-xs text-blue-900 space-y-1 animate-fade-in">
+                      <p className="font-bold">O pagamento será feito diretamente na maquininha do entregador.</p>
+                      <div className="pt-0.5 flex flex-wrap gap-2 text-[10px] text-blue-800 font-semibold">
+                        {cartEst?.acceptDebitCard !== false && (
+                          <span className="bg-blue-100/60 px-2 py-0.5 rounded border border-blue-200">✓ Débito</span>
+                        )}
+                        {cartEst?.acceptCreditCard !== false && (
+                          <span className="bg-blue-100/60 px-2 py-0.5 rounded border border-blue-200">✓ Crédito</span>
+                        )}
+                        {cartEst?.acceptContactless !== false && (
+                          <span className="bg-blue-100/60 px-2 py-0.5 rounded border border-blue-200">✓ Aproximação</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {paymentMethod === 'pix_on_delivery' && (
+                    <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-100 text-xs text-emerald-950 leading-relaxed animate-fade-in">
+                      <p className="font-bold">O pagamento será realizado diretamente ao estabelecimento no recebimento.</p>
+                      <p className="text-[10px] text-emerald-800 font-medium mt-1">
+                        O entregador ou atendente fornecerá a chave Pix para transferência. Sem QR code automático na plataforma.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* BLOCO 6 — ITENS DO PEDIDO */}
+                <div className="bg-white p-4 rounded-2xl border border-[#EADFD8] space-y-3">
+                  <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider">Itens do seu Pedido</h4>
+                  <div className="divide-y divide-[#F7F4EF]">
+                    {cart.map((item, index) => {
+                      const normalized = normalizeOrderItem(item);
+                      const hasPromo = normalized.promotionApplied && normalized.regularUnitPrice && normalized.regularUnitPrice > normalized.baseUnitPrice;
+
+                      return (
+                        <div key={index} className="py-3 first:pt-0 last:pb-0 space-y-2 text-xs">
+                          <div className="flex justify-between items-start gap-4">
+                            <div>
+                              <h5 className="font-bold text-[#201A17]">{normalized.productName}</h5>
+                              <div className="flex items-center gap-2 mt-0.5 text-[11px]">
+                                <span className="text-[#756B66] font-semibold">Qtd: {normalized.quantity}</span>
+                                <span className="text-[#EADFD8]">•</span>
+                                {hasPromo ? (
+                                  <>
+                                    <span className="text-[#756B66] line-through">R$ {normalized.regularUnitPrice?.toFixed(2).replace('.', ',')}</span>
+                                    <span className="font-bold text-[#E94F2F]">R$ {normalized.baseUnitPrice.toFixed(2).replace('.', ',')}</span>
+                                  </>
+                                ) : (
+                                  <span className="text-[#756B66] font-semibold">R$ {normalized.baseUnitPrice.toFixed(2).replace('.', ',')}</span>
+                                )}
+                              </div>
+                            </div>
+                            <span className="font-black text-[#201A17] whitespace-nowrap">
+                              R$ {normalized.lineTotal.toFixed(2).replace('.', ',')}
+                            </span>
+                          </div>
+
+                          {/* Customizations */}
+                          {(() => {
+                            const customizationLines = getCartItemCustomizationLines(normalized);
+                            if (customizationLines.length === 0) return null;
+                            return (
+                              <div className="pl-3 border-l-2 border-[#EADFD8] ml-1 space-y-0.5 text-[11px] text-[#756B66]">
+                                {customizationLines.map((opt, oIdx) => {
+                                  const hasQty = opt.quantity && opt.quantity > 1;
+                                  return (
+                                    <div key={oIdx} className="flex justify-between">
+                                      <span>
+                                        + {opt.groupName}: {opt.optionName} {hasQty ? `(×${opt.quantity})` : ''}
+                                      </span>
+                                      {opt.additionalPrice > 0 && (
+                                        <span className="font-medium text-[#2F9E69] shrink-0">
+                                          + R$ {(opt.additionalPrice * (opt.quantity ?? 1)).toFixed(2).replace('.', ',')}
+                                        </span>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
+
+                          {normalized.notes && (
+                            <p className="text-[11px] text-amber-800 font-medium italic pl-3 border-l-2 border-amber-200 mt-1">
+                              Obs: “{normalized.notes}”
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
+                {/* BLOCO 7 — RESUMO FINAL */}
+                <div className="bg-[#F7F4EF] p-4 rounded-2xl border border-[#EADFD8] space-y-2">
+                  <h4 className="text-xs font-black text-[#756B66] uppercase tracking-wider">Resumo Financeiro</h4>
+                  
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex justify-between text-[#756B66] font-semibold">
+                      <span>Subtotal de produtos</span>
+                      <span className="font-bold text-[#201A17]">R$ {cartSubtotal.toFixed(2).replace('.', ',')}</span>
+                    </div>
 
-                {/* Actions */}
-                <div className="flex gap-4 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsCheckoutOpen(false)}
-                    className="flex-1 bg-[#F7F4EF] hover:bg-gray-100 text-[#756B66] border border-[#EADFD8] py-3 rounded-xl font-bold text-xs"
-                  >
-                    Voltar ao Carrinho
-                  </button>
-                  {isSubmitDisabled ? (
+                    {/* Promos / Savings */}
+                    {(() => {
+                      const totalSavings = cart.reduce((acc, item) => {
+                        const normalized = normalizeOrderItem(item);
+                        if (normalized.promotionApplied && normalized.regularUnitPrice && normalized.regularUnitPrice > normalized.baseUnitPrice) {
+                          return acc + (normalized.regularUnitPrice - normalized.baseUnitPrice) * normalized.quantity;
+                        }
+                        return acc;
+                      }, 0);
+
+                      if (totalSavings <= 0) return null;
+                      return (
+                        <div className="flex justify-between text-rose-600 font-semibold">
+                          <span>Economia em promoções</span>
+                          <span className="font-bold">- R$ {totalSavings.toFixed(2).replace('.', ',')}</span>
+                        </div>
+                      );
+                    })()}
+
+                    {couponDiscount > 0 && (
+                      <div className="flex justify-between text-rose-600 font-semibold">
+                        <span>Desconto do cupom ({couponCode?.toUpperCase()})</span>
+                        <span className="font-bold">- R$ {couponDiscount.toFixed(2).replace('.', ',')}</span>
+                      </div>
+                    )}
+
+                    <div className="flex justify-between text-[#756B66] font-semibold">
+                      <span>Taxa de Entrega ({deliveryType === 'entrega' ? (bairro || 'Endereço') : 'Retirada'})</span>
+                      <span className="font-bold text-[#201A17]">
+                        {deliveryType === 'retirada' 
+                          ? 'Grátis' 
+                          : (quoteLoading 
+                            ? 'Calculando...' 
+                            : (quoteError || !quoteAvailable 
+                              ? 'Indisponível' 
+                              : (deliveryFee === 0 ? 'Grátis' : `R$ ${deliveryFee.toFixed(2).replace('.', ',')}`)
+                            )
+                          )
+                        }
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between text-sm text-[#201A17] font-black pt-2 border-t border-[#EADFD8] mt-2">
+                      <span>Total do Pedido</span>
+                      <span className="text-[#2F9E69] text-base">
+                        {deliveryType === 'entrega' && (quoteLoading || quoteError || !quoteAvailable)
+                          ? 'Indisponível'
+                          : cartTotal.toLocaleString("pt-BR", {
+                              style: "currency",
+                              currency: "BRL"
+                            })
+                        }
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* BLOCO 8 — CONFIRMAÇÃO */}
+                <div className="space-y-4">
+                  <div className="p-3.5 bg-amber-50/40 border border-amber-200/50 rounded-xl">
+                    <p className="text-xs font-bold text-amber-900 leading-relaxed">
+                      ⚠️ O pagamento será realizado diretamente ao estabelecimento na entrega ou retirada. A UaiPertim não processa pagamentos online.
+                    </p>
+                    <label className="flex items-start gap-2.5 cursor-pointer mt-3 text-left">
+                      <input
+                        type="checkbox"
+                        checked={confirmPaymentToEst}
+                        onChange={(e) => setConfirmPaymentToEst(e.target.checked)}
+                        className="mt-0.5 rounded text-[#E94F2F] focus:ring-[#E94F2F]"
+                      />
+                      <span className="text-[11px] font-bold text-[#201A17] select-none leading-tight">
+                        Confirmo que farei o pagamento diretamente ao estabelecimento. *
+                      </span>
+                    </label>
+                  </div>
+
+                  {/* Observações de Envio */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-[#756B66] uppercase tracking-wider block">Instruções adicionais de entrega (Opcional)</label>
+                    <textarea
+                      placeholder="Ex: Deixar na portaria, interfone com defeito, etc."
+                      value={checkoutNotes}
+                      onChange={(e) => setCheckoutNotes(e.target.value)}
+                      rows={2}
+                      className="w-full text-xs p-3 rounded-xl border border-[#EADFD8] outline-none focus:border-[#E94F2F]/50 resize-none placeholder:text-gray-400 font-semibold"
+                    />
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex gap-3 pt-2">
                     <button
                       type="button"
-                      disabled
-                      className="flex-1 bg-gray-200 text-gray-400 border border-gray-300 py-3 rounded-xl font-bold text-xs cursor-not-allowed"
+                      onClick={() => setIsCheckoutOpen(false)}
+                      className="flex-1 bg-[#F7F4EF] hover:bg-gray-100 text-[#756B66] border border-[#EADFD8] py-3 rounded-xl font-bold text-xs cursor-pointer"
                     >
-                      {submitButtonLabel}
+                      Voltar ao Carrinho
                     </button>
-                  ) : (
-                    <button
-                      type="submit"
-                      className="flex-1 bg-[#E94F2F] hover:bg-[#BD351C] text-white py-3 rounded-xl font-bold text-xs shadow-md"
-                    >
-                      {submitButtonLabel}
-                    </button>
-                  )}
+                    {isSubmitDisabled ? (
+                      <button
+                        type="button"
+                        disabled
+                        className="flex-1 bg-gray-200 text-gray-400 border border-gray-300 py-3 rounded-xl font-bold text-xs cursor-not-allowed text-center"
+                      >
+                        {submitButtonLabel}
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        className="flex-1 bg-[#E94F2F] hover:bg-[#BD351C] text-white py-3 rounded-xl font-bold text-xs shadow-md cursor-pointer text-center"
+                      >
+                        Confirmar pedido
+                      </button>
+                    )}
+                  </div>
                 </div>
 
               </form>
@@ -3838,7 +4833,7 @@ export const ClientArea: React.FC = () => {
                     Todas as categorias
                   </h3>
                   <p className="text-[11px] text-[#756B66] font-bold mt-0.5">
-                    Selecione uma categoria para filtrar o cardápio
+                    Selecione uma categoria para filtrar o catálogo
                   </p>
                 </div>
                 <button 
@@ -3852,18 +4847,17 @@ export const ClientArea: React.FC = () => {
               {/* Grid of categories */}
               <div className="p-6 overflow-y-auto space-y-4">
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-4">
-                  {allCategoriesList.map((label) => {
-                    const catId = getCategoryIdByLabel(label);
-                    const style = getCategoryStyle(catId);
+                  {availableCategories.map((cat) => {
+                    const isSelected = selectedCategory === cat.label;
+                    const style = getCategoryStyle(cat.id === 'all' ? 'Todos' : cat.id);
                     const IconComponent = style.icon;
-                    const isSelected = selectedCategory === label;
 
                     return (
                       <button
-                        key={label}
+                        key={cat.id}
                         type="button"
                         onClick={() => {
-                          setSelectedCategory(label);
+                          setSelectedCategory(cat.label);
                           setIsAllCategoriesModalOpen(false);
                           
                           // Scroll to results cleanly if needed
@@ -3875,7 +4869,7 @@ export const ClientArea: React.FC = () => {
                           }, 100);
                         }}
                         aria-pressed={isSelected}
-                        aria-label={`Categoria ${label}`}
+                        aria-label={`Categoria ${cat.label}`}
                         className="flex flex-col items-center gap-2 focus:outline-none select-none group cursor-pointer p-2 rounded-2xl hover:bg-[#FAF8F6] transition-all"
                       >
                         <div
@@ -3894,7 +4888,7 @@ export const ClientArea: React.FC = () => {
                             isSelected ? 'text-[#E94F2F] font-extrabold' : 'text-[#756B66] group-hover:text-[#201A17]'
                           }`}
                         >
-                          {label}
+                          {cat.label}
                         </span>
                       </button>
                     );

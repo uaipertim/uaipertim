@@ -7,7 +7,6 @@ import { APP_ENV, ENABLE_DEMO_ROUTE } from '../config';
 import { NotificationBell } from './notifications/NotificationBell';
 import { NotificationPanel } from './notifications/NotificationPanel';
 import { NotificationSoundControl } from './notifications/NotificationSoundControl';
-import { ProfileDropdown } from './layout/ProfileDropdown';
 
 export const Header: React.FC = () => {
   const { 
@@ -24,8 +23,19 @@ export const Header: React.FC = () => {
   } = useApp();
   const { isAuthenticated, userProfile, logout, loading, currentUser } = useAuth();
   const [path, navigate] = useLocation();
-  const [isMenuOpen, setIsMenuOpen] = React.useState(false);
-  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const [showLogoutConfirm, setShowLogoutConfirm] = React.useState(false);
+  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!showLogoutConfirm) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowLogoutConfirm(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showLogoutConfirm]);
 
   const activeUserOrders = React.useMemo(() => {
     if (!isAuthenticated || !userProfile || userProfile.role !== 'customer' || !currentUser) return [];
@@ -34,6 +44,26 @@ export const Header: React.FC = () => {
       !['concluido', 'recusado', 'cancelado'].includes(o.status)
     );
   }, [orders, isAuthenticated, userProfile, currentUser]);
+
+  const firstName = React.useMemo(() => {
+    if (!isAuthenticated || loading) return null;
+    const nameFromProfile = userProfile?.name;
+    if (nameFromProfile && nameFromProfile.trim()) {
+      return nameFromProfile.trim().split(/\s+/)[0];
+    }
+    const nameFromAuth = currentUser?.displayName;
+    if (nameFromAuth && nameFromAuth.trim()) {
+      return nameFromAuth.trim().split(/\s+/)[0];
+    }
+    const email = userProfile?.email || currentUser?.email;
+    if (email) {
+      const prefix = email.split('@')[0];
+      if (prefix && prefix.trim()) {
+        return prefix.trim();
+      }
+    }
+    return null;
+  }, [isAuthenticated, loading, userProfile, currentUser]);
 
   const showDemoHeader = path === '/demo' && ENABLE_DEMO_ROUTE;
   const activeOrdersCount = orders.filter(o => o.status !== 'concluido' && o.status !== 'recusado').length;
@@ -235,9 +265,33 @@ export const Header: React.FC = () => {
               <NotificationSoundControl />
             </div>
           )}
-          {isAuthenticated && <NotificationBell />}
+          {isAuthenticated && (
+            <div className="flex items-center gap-2 sm:gap-2.5">
+              <NotificationBell />
+              {firstName && (
+                <div className="md:hidden flex flex-col justify-center text-left select-none" style={{ gap: '2px' }}>
+                  <span className="text-sm xs:text-[15px] leading-tight text-[#201A17] font-medium">
+                    Olá, <strong className="font-extrabold text-[#E94F2F] max-w-[65px] xs:max-w-[100px] truncate inline-block align-bottom" title={firstName}>{firstName}</strong>
+                  </span>
+                  <span className="text-[11px] xs:text-xs leading-none text-[#756B66] font-semibold mt-0.5 whitespace-nowrap tracking-wide">
+                    Tudo pertim de você
+                  </span>
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirm(true)}
+                disabled={isLoggingOut}
+                className="md:hidden flex items-center gap-1 px-2 py-1.5 xs:px-2.5 rounded-xl text-xs font-black border border-rose-200/60 text-rose-600 bg-rose-50/50 hover:bg-rose-50 active:scale-95 transition-all cursor-pointer min-h-[36px] select-none focus:outline-none focus:ring-2 focus:ring-rose-400 disabled:opacity-50 disabled:pointer-events-none"
+                aria-label="Sair da conta"
+              >
+                <LogOut className="w-4 h-4 shrink-0 text-[#E94F2F]" />
+                <span className="hidden xs:inline">Sair</span>
+              </button>
+            </div>
+          )}
           {loading ? (
-            <div className="w-16 h-8 bg-neutral-200/60 animate-pulse rounded-lg" />
+            <div className="hidden md:block w-16 h-8 bg-neutral-200/60 animate-pulse rounded-lg" />
           ) : (
             <>
               {/* Visitor (Unauthenticated) */}
@@ -247,7 +301,7 @@ export const Header: React.FC = () => {
                     sessionStorage.removeItem('redirect_after_login');
                     navigate('/login');
                   }}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-[#E94F2F] hover:bg-[#BD351C] transition-all cursor-pointer shadow-xs"
+                  className="hidden md:flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-[#E94F2F] hover:bg-[#BD351C] transition-all cursor-pointer shadow-xs"
                 >
                   <LogIn className="w-3.5 h-3.5" />
                   <span>Entrar</span>
@@ -378,36 +432,6 @@ export const Header: React.FC = () => {
                   </button>
                 </div>
               )}
-
-              {/* Mobile Menu Button - visible on mobile, hidden on desktop */}
-              {isAuthenticated && (
-                <div className="md:hidden relative">
-                  <button
-                    ref={triggerRef}
-                    onClick={() => setIsMenuOpen(!isMenuOpen)}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#EADFD8] bg-[#F7F4EF] hover:bg-white text-xs font-black text-[#201A17] cursor-pointer transition-all active:scale-95 shadow-xs"
-                    aria-label="Abrir menu de usuário"
-                  >
-                    <User className="w-4 h-4 text-[#E94F2F]" />
-                    <span className="max-w-[105px] truncate text-xs">
-                      {userProfile?.name?.split(' ')[0] || 'Menu'}
-                    </span>
-                    <ChevronDown className={`w-3 h-3 text-[#756B66] transition-transform ${isMenuOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                  
-                  <ProfileDropdown
-                    isOpen={isMenuOpen}
-                    onClose={() => setIsMenuOpen(false)}
-                    triggerRef={triggerRef}
-                    userProfile={userProfile}
-                    activeUserOrders={activeUserOrders}
-                    establishments={establishments}
-                    navigate={navigate}
-                    logout={logout}
-                    path={path}
-                  />
-                </div>
-              )}
             </>
           )}
         </div>
@@ -418,11 +442,20 @@ export const Header: React.FC = () => {
         <div className="bg-[#F7F4EF]/50 border-t border-[#EADFD8]/10 animate-fade-in">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5 flex justify-between items-center gap-2">
             {/* Delivery City Info with Custom Invisible native select trigger */}
-            <div className="flex items-center gap-1.5 sm:gap-2 text-xs min-w-0">
-              <MapPin className="w-4 h-4 text-[#E94F2F] shrink-0" />
-              <span className="text-[#756B66] font-bold hidden sm:inline">Entregar em:</span>
-              <span className="font-extrabold text-[#201A17] truncate max-w-[100px] sm:max-w-none">{selectedCity.name}</span>
-              <div className="relative inline-block ml-1 shrink-0">
+            <div className="flex items-center gap-2 text-xs min-w-0 flex-1">
+              <MapPin className="w-4 h-4 text-[#E94F2F] shrink-0 self-center" />
+              <div className="flex flex-col sm:flex-row sm:items-center gap-0.5 sm:gap-1.5 min-w-0 flex-1">
+                <span className="text-[#756B66] font-bold text-[11px] sm:text-xs leading-none shrink-0">
+                  Entregar em:
+                </span>
+                <span 
+                  className="font-extrabold text-[#201A17] text-xs sm:text-sm line-clamp-2 md:line-clamp-1 whitespace-normal break-words leading-tight"
+                  title={`${selectedCity.name} (${selectedCity.state})`}
+                >
+                  {selectedCity.name}
+                </span>
+              </div>
+              <div className="relative inline-block ml-2 shrink-0">
                 <select
                   value={selectedCity.id}
                   onChange={(e) => {
@@ -431,6 +464,7 @@ export const Header: React.FC = () => {
                   }}
                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                   title="Alterar Cidade"
+                  aria-label="Alterar cidade de entrega"
                 >
                   {cities.map((city) => (
                     <option key={city.id} value={city.id}>
@@ -438,7 +472,7 @@ export const Header: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <span className="text-[#E94F2F] font-black text-xs uppercase tracking-wider hover:underline cursor-pointer">
+                <span className="text-[#E94F2F] font-black text-xs uppercase tracking-wider hover:underline cursor-pointer select-none">
                   Alterar
                 </span>
               </div>
@@ -460,6 +494,62 @@ export const Header: React.FC = () => {
                 {cart.reduce((sum, item) => sum + item.quantity, 0)}
               </span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal */}
+      {showLogoutConfirm && (
+        <div 
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="logout-modal-title"
+          aria-describedby="logout-modal-desc"
+        >
+          <div className="bg-[#F7F4EF] rounded-2xl border border-[#EADFD8] p-6 max-w-sm w-full shadow-xl animate-scale-up">
+            <h3 id="logout-modal-title" className="text-lg font-black text-[#201A17] mb-2">
+              Sair da conta?
+            </h3>
+            <p id="logout-modal-desc" className="text-xs text-[#756B66] font-semibold mb-6">
+              Você poderá entrar novamente quando quiser.
+            </p>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowLogoutConfirm(false)}
+                disabled={isLoggingOut}
+                className="px-4 py-2 rounded-xl text-xs font-black text-[#756B66] bg-white border border-[#EADFD8] hover:bg-[#F7F4EF] active:scale-95 transition-all cursor-pointer min-h-[38px] disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    setIsLoggingOut(true);
+                    await logout();
+                    setShowLogoutConfirm(false);
+                    navigate('/');
+                  } catch (e) {
+                    console.error(e);
+                  } finally {
+                    setIsLoggingOut(false);
+                  }
+                }}
+                disabled={isLoggingOut}
+                className="px-4 py-2 rounded-xl text-xs font-black text-white bg-[#E94F2F] hover:bg-[#BD351C] active:scale-95 transition-all cursor-pointer min-h-[38px] flex items-center gap-1.5 justify-center disabled:opacity-50"
+              >
+                {isLoggingOut ? (
+                  <>
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                    <span>Saindo...</span>
+                  </>
+                ) : (
+                  <span>Sair</span>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

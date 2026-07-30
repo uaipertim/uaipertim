@@ -11,6 +11,7 @@ export interface Establishment {
   active: boolean;
   acceptingOrders?: boolean;
   temporarilyPaused?: boolean;
+  pausedUntil?: string | null;
   suspended?: boolean;
   featured: boolean;
   image: string;
@@ -31,6 +32,10 @@ export interface Establishment {
   cep?: string;
   atendeRetirada?: boolean;
   entregaPropria?: boolean;
+  acceptsDelivery?: boolean;
+  acceptsPickup?: boolean;
+  aboutDescription?: string;
+  acceptedPaymentMethods?: string[];
   bairrosAtendidos?: string;
   acceptCash?: boolean;
   acceptPix?: boolean;
@@ -40,6 +45,7 @@ export interface Establishment {
   acceptDeliveryPayment?: boolean;
   acceptPickupPayment?: boolean;
   description?: string;
+  baseEstimatedMinutes?: number;
   platformStatus?: 'active' | 'inactive' | 'archived';
   categoryName?: string;
   operationalPause?: boolean;

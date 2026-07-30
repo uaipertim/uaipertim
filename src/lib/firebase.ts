@@ -1,5 +1,5 @@
 import { initializeApp, getApp, getApps } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import { 
   getAuth, 
   signInWithEmailAndPassword, 
@@ -16,7 +16,7 @@ const firebaseConfig = FIREBASE_CONFIG;
 const databaseId = FIRESTORE_DATABASE_ID;
 
 let app;
-let db;
+let db: any;
 let auth: Auth;
 let isFirebaseConnected = false;
 
@@ -27,8 +27,10 @@ try {
     app = getApp();
   }
   
-  // Connect to the specific databaseId provided
-  db = getFirestore(app, databaseId);
+  // Connect to the specific databaseId provided using experimentalForceLongPolling to prevent iframe WebSocket blockages
+  db = initializeFirestore(app, {
+    experimentalForceLongPolling: true
+  }, databaseId);
   auth = getAuth(app);
   isFirebaseConnected = true;
   console.log("Firebase initialized successfully with database:", databaseId);
